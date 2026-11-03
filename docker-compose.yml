@@ -1,0 +1,34 @@
+services:
+  app:
+    build: .
+    restart: always          # إعادة تشغيل تلقائية عند أي توقف أو إعادة تشغيل السيرفر
+    env_file: .env
+    volumes:
+      - ./data:/srv/data      # الذاكرة والصفقات تبقى محفوظة
+    ports:
+      - "127.0.0.1:8000:8000"
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  # بوابة HTTPS تلقائية (شهادة مجانية) حتى تكون كلمة المرور مشفرة
+  caddy:
+    image: caddy:2
+    restart: always
+    ports: ["80:80", "443:443"]
+    environment:
+      - DOMAIN=${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+    depends_on: [app]
+
+  # يعيد تشغيل الوكيل إذا أصبح "غير صحي" (معلّق) وليس فقط عند توقفه
+  autoheal:
+    image: willfarrell/autoheal
+    restart: always
+    environment: [AUTOHEAL_CONTAINER_LABEL=all]
+    volumes: ["/var/run/docker.sock:/var/run/docker.sock"]
+
+volumes:
+  caddy_data:
