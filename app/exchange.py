@@ -67,27 +67,68 @@ async def ohlcv_df(ex, symbol, tf, limit=300) -> pd.DataFrame:
     return df.drop_duplicates("ts").reset_index(drop=True)
 
 
-async def build_universe(spot, fut, size, min_vol) -> list:
-    """أعلى العملات سيولةً المتاحة في Spot و Futures معاً."""
+COINGECKO = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=150&page=1"
+STABLE_WORDS = ("usd", "eur", "gold", "wrapped", "staked", "bridged")
+
+
+def _market_cap_ranking() -> list:
+    """أكبر العملات حسب القيمة السوقية من CoinGecko (مجاني، بدون مفتاح)."""
+    import json
+    import urllib.request
+    req = urllib.request.Request(COINGECKO, headers={"User-Agent": "trading-agent/1.0", "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        data = json.loads(r.read())
+    out = []
+    for c in data:
+        name = (c.get("name") or "").lower()
+        if any(w in name for w in STABLE_WORDS):
+            continue
+        out.append({"symbol": (c.get("symbol") or "").upper(), "rank": c.get("market_cap_rank"),
+                    "name": c.get("name"), "mcap": c.get("market_cap") or 0})
+    return out
+
+
+async def build_universe(spot, fut, size, min_vol) -> tuple:
+    """
+    أفضل العملات في السوق: الترتيب حسب القيمة السوقية (CoinGecko)،
+    بشرط التوفر في Binance Spot و Futures وسيولة يومية كافية.
+    إذا تعذر الوصول لـ CoinGecko يرجع للترتيب حسب السيولة.
+    يرجع (قائمة الرموز, معلومات الترتيب لكل رمز, مصدر الترتيب).
+    """
+    import asyncio
     await spot.load_markets()
     await fut.load_markets()
     tickers = await spot.fetch_tickers()
     fut_bases = {m["base"] for m in fut.markets.values() if m.get("swap") and m.get("quote") == "USDT" and m.get("active")}
-    cands = []
+    eligible = {}
     for sym, t in tickers.items():
         m = spot.markets.get(sym)
         if not m or m.get("quote") != "USDT" or not m.get("active") or not m.get("spot"):
             continue
         base = m["base"]
-        if base in STABLES or base.endswith(("UP", "DOWN", "BULL", "BEAR")):
-            continue
-        if base not in fut_bases:
+        if base in STABLES or base.endswith(("UP", "DOWN", "BULL", "BEAR")) or base not in fut_bases:
             continue
         qv = t.get("quoteVolume") or 0
         if qv >= min_vol:
-            cands.append((qv, sym))
-    cands.sort(reverse=True)
-    return [s for _, s in cands[:size]]
+            eligible[base] = (sym, qv)
+
+    try:
+        ranking = await asyncio.to_thread(_market_cap_ranking)
+        picked, info = [], {}
+        for c in ranking:
+            if c["symbol"] in eligible and eligible[c["symbol"]][0] not in picked:
+                sym = eligible[c["symbol"]][0]
+                picked.append(sym)
+                info[sym] = {"rank": c["rank"], "name": c["name"], "mcap": c["mcap"]}
+            if len(picked) >= size:
+                break
+        if len(picked) >= min(10, size):
+            return picked, info, "القيمة السوقية"
+    except Exception as e:
+        log.warning(f"CoinGecko غير متاح ({e}) — الترتيب حسب السيولة")
+
+    by_vol = sorted(eligible.values(), key=lambda x: -x[1])[:size]
+    return [s for s, _ in by_vol], {}, "السيولة"
 
 
 def fut_symbol(sym: str) -> str:

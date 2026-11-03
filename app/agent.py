@@ -33,6 +33,7 @@ class Agent:
         self.learner = Learner()
         self.liq = LiquidationTracker()
         self.universe, self.analysis, self.prices = [], {}, {}
+        self.rank_info = {}
         self.shadow = memory.kv_get("shadow", {})
         self.pretrained = set(memory.kv_get("pretrained", []))
         self.pretrain_status = "pending"
@@ -83,15 +84,22 @@ class Agent:
     # ================================================================ الدورة
     async def cycle(self):
         if time.time() - self._last_universe > 6 * 3600 or not self.universe:
-            self.universe = await build_universe(self.spot, self.fut, settings.universe_size, settings.min_quote_volume)
-            if "BTC/USDT" not in self.universe:
-                self.universe.insert(0, "BTC/USDT")
+            uni, self.rank_info, source = await build_universe(
+                self.spot, self.fut, settings.universe_size, settings.min_quote_volume)
+            if "BTC/USDT" not in uni:
+                uni.insert(0, "BTC/USDT")
+            added = [s for s in uni if s not in self.universe]
+            self.universe = uni
             self._last_universe = time.time()
-            memory.log_event(f"🔭 نطاق المسح: {len(self.universe)} عملة")
+            names = "، ".join(s.split("/")[0] for s in uni)
+            memory.log_event(f"🔭 أفضل {len(uni)} عملة حسب {source}: {names}")
+            if added and len(added) < len(uni):
+                memory.log_event(f"➕ عملات جديدة دخلت القائمة: {'، '.join(s.split('/')[0] for s in added)}")
             if self.pretrain_status != "running":
                 asyncio.create_task(self.pretrain_all())
 
-        tick = await self.spot.fetch_tickers(self.universe)
+        watch = sorted(set(self.universe) | {p["symbol"] for p in self.broker.positions.values()})
+        tick = await self.spot.fetch_tickers(watch)
         self.prices = {s: float(t["last"]) for s, t in tick.items() if t.get("last")}
 
         for pos, fill, pnl in await self.broker.sync(self.prices):
@@ -152,6 +160,7 @@ class Agent:
             "fvg": len(s["fvgs"]), "ob": len(s["order_blocks"]),
             "rsi": round(float(ctx["df"]["rsi"].iloc[-1]), 1),
             "signals": [x.strategy for x in sigs], "learned": sym in self.pretrained,
+            "rank": (self.rank_info.get(sym) or {}).get("rank"),
         }
         return [(sym, ctx, sg) for sg in sigs]
 
@@ -345,7 +354,8 @@ class Agent:
             "liq_stream": self.liq.connected, "pretrain": self.pretrain_status,
             "pretrained": len(self.pretrained), "universe": len(self.universe),
             "positions": positions, "heartbeat": self.heartbeat,
-            "analysis": sorted(self.analysis.values(), key=lambda a: (not a["signals"], a["symbol"])),
+            "analysis": sorted([a for s, a in self.analysis.items() if s in self.universe],
+                               key=lambda a: (a.get("rank") or 999, a["symbol"])),
             "leaderboard": [r | {"strategy_ar": STRATEGY_AR.get(r["strategy"], r["strategy"]),
                                  "regime_ar": LABELS_AR.get(r["regime"], r["regime"])}
                             for r in self.learner.leaderboard()],
