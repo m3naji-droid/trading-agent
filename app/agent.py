@@ -34,6 +34,7 @@ class Agent:
         self.liq = LiquidationTracker()
         self.universe, self.analysis, self.prices = [], {}, {}
         self.rank_info = {}
+        self.restart_requested = False
         self.shadow = memory.kv_get("shadow", {})
         self.pretrained = set(memory.kv_get("pretrained", []))
         self.pretrain_status = "pending"
@@ -79,6 +80,10 @@ class Agent:
                 await asyncio.sleep(backoff)
                 backoff = min(300, backoff * 2)
             self.heartbeat = time.time()
+            if self.restart_requested:  # تحديث: إعادة تشغيل بين الدورات (الصفقات محفوظة)
+                import os
+                await asyncio.sleep(1)
+                os._exit(0)
             await asyncio.sleep(max(1, settings.scan_interval_sec - (time.time() - t0)))
 
     # ================================================================ الدورة

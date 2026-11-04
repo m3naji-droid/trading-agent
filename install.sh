@@ -19,13 +19,7 @@ IP=$(curl -fsS https://api.ipify.org || curl -fsS ifconfig.me)
 DOMAIN="$(echo "$IP" | tr '.' '-').sslip.io"
 grep -q '^DOMAIN=' .env && sed -i "s|^DOMAIN=.*|DOMAIN=${DOMAIN}|" .env || echo "DOMAIN=${DOMAIN}" >> .env
 mkdir -p data
-[ -d .git ] && git log -1 --format='%h · %cd' --date=format:'%Y-%m-%d %H:%M' > VERSION || echo "manual" > VERSION
-
-# التحديث التلقائي من GitHub كل دقيقتين
-if [ -d .git ]; then
-  echo "*/2 * * * * root $(pwd)/autoupdate.sh" > /etc/cron.d/trading-agent-update
-  chmod 644 /etc/cron.d/trading-agent-update
-fi
+rm -f /etc/cron.d/trading-agent-update  # لم يعد مطلوباً: الوكيل يحدّث نفسه
 
 echo "== 3/4 الجدار الناري =="
 if command -v ufw >/dev/null 2>&1; then

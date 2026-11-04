@@ -22,11 +22,45 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 log = logging.getLogger("main")
 agent = Agent()
 STATIC = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
+import json as _json
+import urllib.request as _ur
 try:
     VERSION = open(os.path.join(os.path.dirname(os.path.dirname(__file__)), "VERSION")).read().strip()
 except Exception:
     VERSION = "—"
+RUNNING_SHA = VERSION.split()[0] if VERSION not in ("—", "baked") else ""
+GITHUB_REPO = os.getenv("GITHUB_REPO", "m3naji-droid/trading-agent")
 TOKEN = hmac.new(settings.dashboard_password.encode(), b"dashboard", hashlib.sha256).hexdigest()
+
+
+def _remote_sha(etag):
+    req = _ur.Request(f"https://api.github.com/repos/{GITHUB_REPO}/commits/main",
+                      headers={"User-Agent": "trading-agent", "Accept": "application/vnd.github+json",
+                               **({"If-None-Match": etag} if etag else {})})
+    try:
+        with _ur.urlopen(req, timeout=20) as r:
+            return _json.loads(r.read())["sha"], r.headers.get("ETag")
+    except _ur.HTTPError as e:
+        if e.code == 304:  # لا تغيير (لا يُحتسب من حد الطلبات)
+            return None, etag
+        raise
+
+
+async def update_watcher():
+    """يفحص GitHub كل دقيقة. عند وجود نسخة جديدة يطلب إعادة تشغيل بين دورتين، فيحمّلها boot.py."""
+    if os.getenv("AUTO_UPDATE", "1") != "1":
+        return
+    etag = None
+    while True:
+        await asyncio.sleep(60)
+        try:
+            sha, etag = await asyncio.to_thread(_remote_sha, etag)
+        except Exception as e:
+            log.debug(f"update check: {e}")
+            continue
+        if sha and sha[:7] != RUNNING_SHA and not agent.restart_requested:
+            memory.log_event(f"⬆️ وُجد تحديث جديد ({sha[:7]}) — تثبيته وإعادة التشغيل خلال لحظات")
+            agent.restart_requested = True
 
 
 def watchdog():
@@ -42,6 +76,10 @@ def watchdog():
 async def lifespan(app):
     await agent.start()
     threading.Thread(target=watchdog, daemon=True).start()
+    asyncio.create_task(update_watcher())
+    if RUNNING_SHA and memory.kv_get("last_version") != RUNNING_SHA:
+        memory.log_event(f"✅ يعمل الآن الإصدار {VERSION}")
+        memory.kv_set("last_version", RUNNING_SHA)
     yield
     for ex in (agent.spot, agent.fut):
         try:
@@ -68,7 +106,7 @@ async def index():
 @app.get("/health")
 async def health():
     ok = time.time() - agent.heartbeat < 600
-    return JSONResponse({"ok": ok, "status": agent.status}, status_code=200 if ok else 503)
+    return JSONResponse({"ok": ok, "status": agent.status, "version": VERSION}, status_code=200 if ok else 503)
 
 
 @app.post("/api/login")
