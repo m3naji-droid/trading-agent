@@ -55,7 +55,7 @@ input{width:100%;padding:12px;border-radius:10px;border:1px solid var(--line);ba
 <div id="login"><div class="card"><h2>🤖 وكيل التداول الذكي</h2><p class="mut" style="font-size:13px">أدخل كلمة مرور لوحة التحكم</p>
 <input id="pw" type="password" placeholder="كلمة المرور" onkeydown="if(event.key==='Enter')doLogin()"><button class="pri" style="width:100%" onclick="doLogin()">دخول</button><p id="lerr" class="dn" style="margin-top:8px"></p></div></div>
 
-<header><h1>🤖 الوكيل الذكي</h1><div style="display:flex;gap:6px"><span id="mode" class="pill">—</span><span id="run" class="pill">—</span></div></header>
+<header><h1>🤖 الوكيل الذكي</h1><div style="display:flex;gap:6px"><span id="ver" class="pill num">—</span><span id="mode" class="pill">—</span><span id="run" class="pill">—</span></div></header>
 
 <main>
 <div id="frozen" class="banner"></div>
@@ -141,7 +141,7 @@ async function loadChart(){const s=$('sym').value;if(!s||!cs)return;try{const d=
  d.trades.forEach(t=>{lines.push(cs.createPriceLine({price:t.entry,color:'#4da3ff',lineWidth:2,title:'دخول'}));lines.push(cs.createPriceLine({price:t.stop,color:'#f05a5a',lineWidth:1,title:'وقف'}));lines.push(cs.createPriceLine({price:t.target,color:'#21c08b',lineWidth:1,title:'هدف'}))});
  chart.timeScale().fitContent()}catch(e){}}
 
-function render(s){S=s;
+function render(s){S=s;$('ver').textContent='v'+(s.version||'—').split(' ')[0];
  $('mode').textContent=s.mode.toUpperCase();$('mode').className='pill '+(s.mode==='live'?'w':'on');
  $('run').textContent=s.frozen?'مُجمَّد':s.running?'يعمل':'متوقف';$('run').className='pill '+(s.frozen?'off':s.running?'on':'w');
  const fz=$('frozen');fz.style.display=(s.frozen||s.market_risk_off)?'block':'none';fz.textContent=s.frozen?'🚨 التداول مجمّد: '+s.frozen_reason:'🛑 السوق العام في حالة خطورة عالية — الوكيل يحمي المحفظة ولا يدخل صفقات جديدة';
