@@ -28,6 +28,9 @@ try:
     VERSION = open(os.path.join(os.path.dirname(os.path.dirname(__file__)), "VERSION")).read().strip()
 except Exception:
     VERSION = "—"
+from .version import VERSION_NUMBER
+VERSION_DATE = VERSION.split("·")[1].strip() if "·" in VERSION else ""
+VERSION_NAME = f"v{VERSION_NUMBER}"
 RUNNING_SHA = VERSION.split()[0] if VERSION not in ("—", "baked") else ""
 GITHUB_REPO = os.getenv("GITHUB_REPO", "m3naji-droid/trading-agent")
 TOKEN = hmac.new(settings.dashboard_password.encode(), b"dashboard", hashlib.sha256).hexdigest()
@@ -59,7 +62,7 @@ async def update_watcher():
             log.debug(f"update check: {e}")
             continue
         if sha and sha[:7] != RUNNING_SHA and not agent.restart_requested:
-            memory.log_event(f"⬆️ وُجد تحديث جديد ({sha[:7]}) — تثبيته وإعادة التشغيل خلال لحظات")
+            memory.log_event("⬆️ وُجد تحديث جديد — تثبيته وإعادة التشغيل خلال لحظات")
             agent.restart_requested = True
 
 
@@ -78,7 +81,7 @@ async def lifespan(app):
     threading.Thread(target=watchdog, daemon=True).start()
     asyncio.create_task(update_watcher())
     if RUNNING_SHA and memory.kv_get("last_version") != RUNNING_SHA:
-        memory.log_event(f"✅ يعمل الآن الإصدار {VERSION}")
+        memory.log_event(f"✅ يعمل الآن الإصدار {VERSION_NAME}")
         memory.kv_set("last_version", RUNNING_SHA)
     yield
     for ex in (agent.spot, agent.fut):
@@ -106,7 +109,7 @@ async def index():
 @app.get("/health")
 async def health():
     ok = time.time() - agent.heartbeat < 600
-    return JSONResponse({"ok": ok, "status": agent.status, "version": VERSION}, status_code=200 if ok else 503)
+    return JSONResponse({"ok": ok, "status": agent.status, "version": VERSION_NAME}, status_code=200 if ok else 503)
 
 
 @app.post("/api/login")
@@ -126,7 +129,8 @@ async def state(req: Request):
     s["trades"] = memory.recent_trades(40)
     s["lessons"] = memory.lessons(8)
     s["equity_curve"] = memory.equity_curve()
-    s["version"] = VERSION
+    s["version"] = VERSION_NAME
+    s["version_date"] = VERSION_DATE
     return s
 
 
