@@ -3,6 +3,7 @@
 المسح → التحليل → التعلم → القرار → التنفيذ → الإدارة → التعلم من النتيجة.
 """
 import asyncio
+import gc
 import logging
 import time
 from types import SimpleNamespace
@@ -22,6 +23,22 @@ from .broker import PaperBroker, LiveBroker
 log = logging.getLogger("agent")
 EXIT_AR = {"stop": "وقف الخسارة", "trailing": "الوقف المتحرك", "target": "الهدف", "timeout": "انتهاء المدة",
            "kill": "مفتاح الطوارئ", "regime": "تغيّر حالة السوق", "exchange_stop": "وقف المنصة"}
+
+
+def memory_usage():
+    """استهلاك الذاكرة: الوكيل نفسه + السيرفر كاملاً (بالميغابايت)."""
+    out = {"agent_mb": 0, "total_mb": 0, "available_mb": 0}
+    try:
+        for line in open("/proc/self/status"):
+            if line.startswith("VmRSS:"):
+                out["agent_mb"] = int(line.split()[1]) // 1024
+        info = {l.split(":")[0]: int(l.split()[1]) for l in open("/proc/meminfo")}
+        out["total_mb"] = info.get("MemTotal", 0) // 1024
+        out["available_mb"] = info.get("MemAvailable", 0) // 1024
+        out["swap_mb"] = info.get("SwapTotal", 0) // 1024
+    except Exception:
+        pass
+    return out
 
 
 class Agent:
@@ -80,6 +97,7 @@ class Agent:
                 await asyncio.sleep(backoff)
                 backoff = min(300, backoff * 2)
             self.heartbeat = time.time()
+            gc.collect()  # تحرير الذاكرة بعد كل دورة
             if self.restart_requested:  # تحديث: إعادة تشغيل بين الدورات (الصفقات محفوظة)
                 import os
                 await asyncio.sleep(1)
@@ -118,7 +136,7 @@ class Agent:
         if reason:
             await self.kill(reason, manual=False)
 
-        sem = asyncio.Semaphore(6)
+        sem = asyncio.Semaphore(3)  # تحليل 3 عملات بالتوازي فقط لتوفير الذاكرة
 
         async def run(sym):
             async with sem:
@@ -366,6 +384,7 @@ class Agent:
                             for r in self.learner.leaderboard()],
             "stats": memory.stats(0), "shadow_stats": memory.stats(1),
             "shadow_open": len(self.shadow),
+            "memory": memory_usage(),
         }
 
     async def candles(self, sym, tf="15m"):
