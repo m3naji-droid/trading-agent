@@ -16,7 +16,9 @@ from fastapi.staticfiles import StaticFiles
 
 from .agent import Agent
 from .config import settings
-from . import memory
+from . import memory, notify, performance
+from .strategies import STRATEGY_AR
+from .regime import LABELS_AR
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("main")
@@ -128,7 +130,10 @@ async def state(req: Request):
     s["events"] = memory.events(80)
     s["trades"] = memory.recent_trades(40)
     s["lessons"] = memory.lessons(8)
-    s["equity_curve"] = memory.equity_curve()
+    s["equity_curve"] = memory.equity_curve(mode=agent.mode)
+    s["perf"] = performance.summary(agent.mode)
+    s["reports"] = memory.kv_get("reports", [])[:7]
+    s["notify"] = {"on": notify.enabled(), "topic": notify.topic(), "server": notify.SERVER}
     s["version"] = VERSION_NAME
     s["version_date"] = VERSION_DATE
     return s
@@ -140,6 +145,74 @@ async def candles(req: Request, symbol: str = "BTC/USDT", tf: str = "15m"):
     if tf not in ("5m", "15m", "1h", "4h", "1d"):
         tf = "15m"
     return await agent.candles(symbol, tf)
+
+
+EXIT_AR = {"stop": "وقف الخسارة", "trailing": "الوقف المتحرك", "target": "الهدف", "timeout": "انتهاء المدة",
+           "kill": "مفتاح الطوارئ", "regime": "تغيّر حالة السوق", "exchange_stop": "وقف المنصة"}
+
+
+def explain(t: dict, closed: bool) -> list:
+    """شرح القرار بالعربية: لماذا دخل، كيف خرج، وماذا تعلّم."""
+    side = "شراء" if t["side"] == "long" else "بيع"
+    out = [f"قرر الوكيل {side} {t['symbol']} باستراتيجية «{STRATEGY_AR.get(t['strategy'], t['strategy'])}» "
+           f"لأن السوق كان في حالة «{LABELS_AR.get(t.get('regime'), t.get('regime') or '—')}»."]
+    if t.get("reasons"):
+        out.append("أسباب الدخول: " + "، ".join(t["reasons"]) + ".")
+    risk = abs(t["entry"] - (t.get("init_stop") or t["stop"]))
+    if risk:
+        out.append(f"وضع وقف الخسارة على مسافة {risk / t['entry']:.2%} من الدخول، والهدف عند "
+                   f"{abs(t['target'] - t['entry']) / risk:.1f} ضعف المخاطرة.")
+    if closed:
+        r = t.get("r_mult") or 0
+        out.append(f"خرج عبر {EXIT_AR.get(t.get('exit_reason'), t.get('exit_reason'))} بنتيجة {t.get('pnl', 0):+.2f}$ ({r:+.2f}R).")
+        if r > 0:
+            out.append("🧠 التعلم: زادت ثقة الوكيل بهذه الاستراتيجية في هذه الحالة من السوق.")
+        else:
+            out.append("🧠 التعلم: حُفظت ظروف هذه الصفقة؛ إذا تكرر نمط مشابه وخسر غالباً سيرفضه الوكيل مستقبلاً.")
+    else:
+        out.append("الصفقة مفتوحة، والوكيل يديرها بوقف متحرك بعد تحقيق ربح يساوي المخاطرة.")
+    return out
+
+
+@app.get("/api/trade/{tid}")
+async def trade_detail(req: Request, tid: str):
+    auth(req)
+    pos = agent.broker.positions.get(tid) if agent.broker else None
+    if pos:
+        t, closed = dict(pos, price=agent.prices.get(pos["symbol"])), False
+        t.pop("features", None)
+    else:
+        try:
+            t = memory.get_trade(int(tid))
+        except ValueError:
+            t = None
+        closed = True
+        if not t:
+            raise HTTPException(404, "الصفقة غير موجودة")
+    end = t.get("closed") or time.time()
+    dur = end - t["opened"]
+    tf = "15m" if dur < 86400 else "1h" if dur < 4 * 86400 else "4h"
+    sec = {"15m": 900, "1h": 3600, "4h": 14400}[tf]
+    since = int((t["opened"] - 40 * sec) * 1000)
+    limit = min(500, int(dur / sec) + 80)
+    try:
+        rows = await agent.spot.fetch_ohlcv(t["symbol"], tf, since=since, limit=limit)
+    except Exception:
+        rows = []
+    return {"trade": t, "closed": closed, "tf": tf, "explain": explain(t, closed),
+            "candles": [{"time": r[0] / 1000, "open": r[1], "high": r[2], "low": r[3], "close": r[4]} for r in rows]}
+
+
+@app.post("/api/notify")
+async def notify_ctl(req: Request):
+    auth(req)
+    body = await req.json()
+    if body.get("action") == "toggle":
+        notify.set_enabled(not notify.enabled())
+    elif body.get("action") == "test":
+        notify.send("🤖 إشعار تجريبي", "الإشعارات تعمل! ستصلك تنبيهات الصفقات والطوارئ والتقرير اليومي هنا.",
+                    force=True, tags=["tada"])
+    return {"on": notify.enabled()}
 
 
 @app.post("/api/control")

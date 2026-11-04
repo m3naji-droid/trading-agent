@@ -39,6 +39,11 @@ def init():
         CREATE TABLE IF NOT EXISTS equity(ts REAL, value REAL);
         CREATE INDEX IF NOT EXISTS ix_tr ON trades(strategy, side, closed);
         """)
+        for col in ("btc REAL", "mode TEXT"):  # ترقية قاعدة البيانات القديمة
+            try:
+                c.execute(f"ALTER TABLE equity ADD COLUMN {col}")
+            except sqlite3.OperationalError:
+                pass
 
 
 # ------------------------------------------------------------------ أدوات عامة
@@ -64,16 +69,36 @@ def kv_set(k, v):
         c.execute("INSERT OR REPLACE INTO kv(k,v) VALUES(?,?)", (k, json.dumps(v)))
 
 
-def record_equity(value):
+def record_equity(value, btc=None, mode=None):
     with _lock, _conn() as c:
-        c.execute("INSERT INTO equity VALUES(?,?)", (time.time(), value))
+        c.execute("INSERT INTO equity(ts,value,btc,mode) VALUES(?,?,?,?)", (time.time(), value, btc, mode))
 
 
-def equity_curve(since_sec=7 * 86400):
+def _mode_clause(mode):
+    if mode is None:
+        return "1=1", ()
+    if mode == "paper":
+        return "(mode=? OR mode IS NULL)", (mode,)
+    return "mode=?", (mode,)
+
+
+def equity_rows(mode=None, since_sec=None):
+    cl, args = _mode_clause(mode)
+    q = f"SELECT ts,value,btc FROM equity WHERE {cl}"
+    if since_sec:
+        q += " AND ts>?"
+        args = args + (time.time() - since_sec,)
     with _conn() as c:
-        rows = c.execute("SELECT ts,value FROM equity WHERE ts>? ORDER BY ts", (time.time() - since_sec,)).fetchall()
+        return [dict(r) for r in c.execute(q + " ORDER BY ts", args)]
+
+
+def equity_curve(since_sec=30 * 86400, mode=None):
+    rows = equity_rows(mode, since_sec)
     step = max(1, len(rows) // 400)
-    return [dict(r) for r in rows[::step]]
+    out = rows[::step]
+    if rows and out[-1] is not rows[-1]:
+        out.append(rows[-1])
+    return out
 
 
 # ------------------------------------------------------------------ الصفقات
@@ -159,3 +184,22 @@ def lessons(limit=8):
         rows = c.execute("SELECT symbol, strategy, side, regime, reasons, exit_reason, r_mult, closed FROM trades "
                          "WHERE shadow=0 AND r_mult<0 ORDER BY closed DESC LIMIT ?", (limit,)).fetchall()
     return [dict(r) | {"reasons": json.loads(r["reasons"] or "[]")} for r in rows]
+
+
+def get_trade(tid):
+    with _conn() as c:
+        r = c.execute("SELECT * FROM trades WHERE id=?", (tid,)).fetchone()
+    if not r:
+        return None
+    d = dict(r)
+    d["reasons"] = json.loads(d["reasons"] or "[]")
+    d.pop("features", None)
+    return d
+
+
+def real_trades(mode):
+    """كل الصفقات المغلقة غير التجريبية في وضع معيّن، من الأقدم للأحدث."""
+    with _conn() as c:
+        rows = c.execute("SELECT id,symbol,strategy,side,regime,pnl,r_mult,exit_reason,opened,closed FROM trades "
+                         "WHERE shadow=0 AND mode=? AND closed IS NOT NULL ORDER BY closed", (mode,)).fetchall()
+    return [dict(r) for r in rows]

@@ -10,7 +10,8 @@ from types import SimpleNamespace
 
 from .config import settings
 from . import memory
-from .exchange import make_clients, build_universe, ohlcv_df, check_key_permissions
+from .exchange import make_clients, build_universe, ohlcv_df, check_key_permissions, fut_symbol
+from . import notify, performance
 from .indicators import enrich
 from .regime import detect_regime, HIGH_RISK, TREND_UP, TREND_DOWN, LABELS_AR
 from . import smc as smc_mod
@@ -19,6 +20,9 @@ from .orderflow import LiquidationTracker, snapshot
 from .learner import Learner, pretrain, simulate_trade
 from .risk import RiskManager
 from .broker import PaperBroker, LiveBroker
+from datetime import datetime, timezone
+
+REPORT_HOUR_UTC = 5  # 8 صباحاً بتوقيت البحرين
 
 log = logging.getLogger("agent")
 EXIT_AR = {"stop": "وقف الخسارة", "trailing": "الوقف المتحرك", "target": "الهدف", "timeout": "انتهاء المدة",
@@ -52,6 +56,7 @@ class Agent:
         self.universe, self.analysis, self.prices = [], {}, {}
         self.rank_info = {}
         self.restart_requested = False
+        self._skip_log = {}
         self.shadow = memory.kv_get("shadow", {})
         self.pretrained = set(memory.kv_get("pretrained", []))
         self.pretrain_status = "pending"
@@ -94,6 +99,9 @@ class Agent:
                 log.exception("cycle error")
                 self.status = f"خطأ مؤقت: {str(e)[:80]}"
                 memory.log_event(f"⚠️ خطأ في الدورة: {str(e)[:150]} — إعادة المحاولة بعد {backoff}ث", "warn")
+                if backoff >= 80:  # أخطاء متكررة لعدة دقائق
+                    notify.send("⚠️ الوكيل يواجه مشكلة", f"أخطاء متكررة منذ دقائق: {str(e)[:120]}\nالوكيل يعيد المحاولة تلقائياً.",
+                                priority=4, tags=["warning"], throttle_key="cycle_error", throttle_sec=3 * 3600)
                 await asyncio.sleep(backoff)
                 backoff = min(300, backoff * 2)
             self.heartbeat = time.time()
@@ -130,8 +138,9 @@ class Agent:
 
         self.equity = await self.broker.equity(self.prices)
         if time.time() - self._last_equity_rec > 300:
-            memory.record_equity(self.equity)
+            memory.record_equity(self.equity, self.prices.get("BTC/USDT"), self.mode)
             self._last_equity_rec = time.time()
+        self.maybe_daily_report()
         reason = self.risk.on_equity(self.equity)
         if reason:
             await self.kill(reason, manual=False)
@@ -153,6 +162,9 @@ class Agent:
             self.market_risk_off = risk_off
             memory.log_event("🛑 BTC في حالة خطورة عالية — إيقاف الدخول وحماية المحفظة" if risk_off
                              else "✅ زال خطر السوق العام — استئناف التحليل", "warn" if risk_off else "info")
+            if risk_off:
+                notify.send("🛑 السوق في حالة خطر", "البيتكوين في تذبذب شديد. الوكيل أوقف الدخول في صفقات جديدة لحماية المحفظة.",
+                            priority=4, tags=["rotating_light"], throttle_key="risk_off", throttle_sec=6 * 3600)
 
         await self.manage_positions()
         await self.decide([c for r in results for c in r])
@@ -232,6 +244,9 @@ class Agent:
         if not sz or sz["notional"] < 6:
             return
         market = "futures" if (sig.side == "short" or sz["leverage"] > 1 or conf >= 0.72) else "spot"
+        market, sz = self._fit_min_notional(sym, market, sig, sz, price)
+        if not sz:
+            return
         pos = {"symbol": sym, "market": market, "side": sig.side, "qty": sz["qty"], "leverage": sz["leverage"],
                "stop": sig.stop, "init_stop": sig.stop, "target": sig.target, "atr": atr,
                "strategy": sig.strategy, "regime": ctx["regime"]["regime"], "features": feats,
@@ -245,6 +260,47 @@ class Agent:
         memory.log_event(
             f"📈 فتح {side_ar} {sym} ({market} x{pos['leverage']}) | {STRATEGY_AR[sig.strategy]} | "
             f"ثقة {conf:.0%} | مخاطرة {sz['risk_pct']:.1%} | الأسباب: {'، '.join(sig.reasons[:4])}", "trade")
+        notify.send(f"📈 {side_ar} {sym.split('/')[0]} ({market} x{pos['leverage']})",
+                    f"{STRATEGY_AR[sig.strategy]} · ثقة {conf:.0%}\nدخول {pos['entry']:.6g} · وقف {pos['stop']:.6g} · هدف {pos['target']:.6g}\n"
+                    f"المخاطرة: {pos['risk_usd']:.2f}$\n" + "، ".join(sig.reasons[:3]), tags=["chart_with_upwards_trend"])
+
+    # ================================================================ الحد الأدنى للصفقة في Binance
+    def _min_cost(self, sym, market):
+        ex, s = (self.fut, fut_symbol(sym)) if market == "futures" else (self.spot, sym)
+        m = (getattr(ex, "markets", None) or {}).get(s) or {}
+        lim = ((m.get("limits") or {}).get("cost") or {}).get("min")
+        if not lim:
+            for f in (m.get("info") or {}).get("filters", []) or []:
+                if f.get("filterType") in ("MIN_NOTIONAL", "NOTIONAL"):
+                    lim = float(f.get("notional") or f.get("minNotional") or 0)
+        return float(lim or 5) * 1.05  # هامش أمان 5%
+
+    def _fit_min_notional(self, sym, market, sig, sz, price):
+        """
+        رأس المال الصغير: بعض العقود تشترط قيمة دنيا كبيرة للصفقة.
+        1) يجرب السوق الآخر (Spot) إن كان ممكناً. 2) يرفع الحجم للحد الأدنى فقط إذا بقيت المخاطرة ضمن الحد الأقصى.
+        3) وإلا يتجاوز الفرصة ويسجّل السبب.
+        """
+        need = self._min_cost(sym, market)
+        if sz["notional"] >= need:
+            return market, sz
+        if market == "futures" and sig.side == "long" and sz["leverage"] == 1:
+            need_spot = self._min_cost(sym, "spot")
+            if sz["notional"] >= need_spot:
+                return "spot", sz
+        scale = need / sz["notional"]
+        new_risk = sz["risk_usd"] * scale
+        free = self.equity - sum(p["notional"] / p["leverage"] for p in self.broker.positions.values())
+        if new_risk <= self.equity * settings.risk_max and need / sz["leverage"] <= free * 0.95:
+            sz = dict(sz, qty=sz["qty"] * scale, notional=need, risk_usd=new_risk, margin=need / sz["leverage"],
+                      risk_pct=new_risk / self.equity)
+            return market, sz
+        key = f"minskip_{sym}_{market}"
+        if time.time() - self._skip_log.get(key, 0) > 6 * 3600:
+            self._skip_log[key] = time.time()
+            memory.log_event(f"💡 تجاوز {sym} ({market}): الحد الأدنى للصفقة في Binance {need:.0f}$ "
+                             f"يتطلب مخاطرة {new_risk / max(self.equity, 1e-9):.1%} — أعلى من الحد المسموح {settings.risk_max:.0%}")
+        return market, None
 
     # ================================================================ إدارة الصفقات
     async def manage_positions(self):
@@ -292,13 +348,16 @@ class Agent:
 
     def _on_closed(self, pos, fill, pnl, reason):
         r = pnl / pos["risk_usd"] if pos.get("risk_usd") else 0
-        memory.save_trade(pos | {"exit": fill, "pnl": pnl, "r_mult": r, "exit_reason": reason,
+        memory.save_trade(pos | {"stop": pos.get("init_stop", pos["stop"]), "exit": fill, "pnl": pnl, "r_mult": r, "exit_reason": reason,
                                  "closed": time.time(), "mode": self.mode, "shadow": 0})
         self.learner.update(pos["strategy"], pos["regime"], r, weight=1.0)
         self.risk.on_close(r)
         icon = "✅" if pnl > 0 else "🔻"
         memory.log_event(f"{icon} إغلاق {pos['symbol']} عبر {EXIT_AR.get(reason, reason)}: "
                          f"{pnl:+.2f}$ ({r:+.2f}R)", "trade")
+        notify.send(f"{icon} إغلاق {pos['symbol'].split('/')[0]}: {pnl:+.2f}$ ({r:+.2f}R)",
+                    f"{STRATEGY_AR[pos['strategy']]} · عبر {EXIT_AR.get(reason, reason)}\nالمحفظة: ${self.equity:,.2f}",
+                    tags=["white_check_mark" if pnl > 0 else "small_red_triangle_down"])
         if r <= 0:
             memory.log_event(f"🧠 درس محفوظ: {STRATEGY_AR[pos['strategy']]} في {LABELS_AR.get(pos['regime'])} "
                              f"خسرت — سيُرفض النمط المشابه إذا تكرر", "learn")
@@ -308,6 +367,26 @@ class Agent:
             await self._close(pos, self.prices.get(pos["symbol"], pos["entry"]), "kill")
         self.risk.freeze(reason, manual=manual)
         memory.log_event(f"🚨 مفتاح الطوارئ: {reason} — أُغلقت كل الصفقات وجُمِّد التداول", "error")
+        notify.send("🚨 مفتاح الطوارئ", f"{reason}\nأُغلقت كل الصفقات وجُمِّد التداول.", priority=5, tags=["rotating_light"])
+
+    # ================================================================ التقرير اليومي
+    def maybe_daily_report(self):
+        now = datetime.now(timezone.utc)
+        today = now.strftime("%Y-%m-%d")
+        if now.hour < REPORT_HOUR_UTC or memory.kv_get("last_report") == today:
+            return
+        memory.kv_set("last_report", today)
+        try:
+            extra = f"🌍 حالة BTC: {self.analysis.get('BTC/USDT', {}).get('label', '—')}"
+            title, text = performance.daily_report(self.mode, self.equity, extra)
+        except Exception as e:
+            log.warning(f"daily report: {e}")
+            return
+        reps = memory.kv_get("reports", [])
+        reps.insert(0, {"ts": time.time(), "title": title, "text": text})
+        memory.kv_set("reports", reps[:14])
+        memory.log_event(f"📰 {title}")
+        notify.send(f"📰 {title}", text, tags=["newspaper"])
 
     # ================================================================ التجريب الموازي (ظل)
     def _open_shadow(self, sym, ctx, sig, feats):
