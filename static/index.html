@@ -9,6 +9,26 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="الوكيل">
 <link rel="manifest" href="/static/manifest.json">
+<script>
+const THEMES={
+ night:{name:'ليلي',icon:'🌙',dark:1,bg:'#0b0f14',card:'#121821',line:'#1f2a36',grid:'#151d27',tx:'#e6edf3',mut:'#8b98a7',soft:'#455261',up:'#21c08b',dn:'#f05a5a',acc:'#4da3ff',warn:'#f2b84b',onacc:'#04121f'},
+ dusk:{name:'ليلي ناعم',icon:'🌆',dark:1,bg:'#1c2331',card:'#262f40',line:'#36425a',grid:'#2c3648',tx:'#eef2f8',mut:'#a6b2c5',soft:'#64728a',up:'#2fcf98',dn:'#ff6b6b',acc:'#6cb4ff',warn:'#f5c461',onacc:'#0b1626'},
+ navy:{name:'أزرق الليل',icon:'🌊',dark:1,bg:'#0e1a2f',card:'#15243e',line:'#25395c',grid:'#1a2b48',tx:'#e9effb',mut:'#96a8c7',soft:'#4f6488',up:'#2bd19a',dn:'#ff6b6b',acc:'#5cb3ff',warn:'#f5c461',onacc:'#06121f'},
+ day:{name:'نهاري',icon:'☀️',dark:0,bg:'#f3f5f8',card:'#ffffff',line:'#e2e7ee',grid:'#eef1f5',tx:'#111827',mut:'#667085',soft:'#a3adbb',up:'#0e9f6e',dn:'#dc3f45',acc:'#2563eb',warn:'#b7791f',onacc:'#ffffff'},
+ sand:{name:'رملي دافئ',icon:'🏜️',dark:0,bg:'#f5efe4',card:'#fffaf1',line:'#e6d9c3',grid:'#eee4d3',tx:'#2b2118',mut:'#7b6a56',soft:'#b3a28b',up:'#1e8a5a',dn:'#c4453c',acc:'#b0601b',warn:'#a8741a',onacc:'#ffffff'},
+};
+let THEME_KEY='auto',T=THEMES.night;
+function pickTheme(k){const auto=matchMedia('(prefers-color-scheme: light)').matches?'day':'night';return THEMES[k]||THEMES[auto]}
+function applyTheme(k){THEME_KEY=k;T=pickTheme(k);const r=document.documentElement.style;
+ for(const v of['bg','card','line','grid','tx','mut','soft','up','dn','acc','warn','onacc'])r.setProperty('--'+v,T[v]);
+ document.documentElement.dataset.dark=T.dark?'1':'0';
+ document.querySelector('meta[name=theme-color]')?.setAttribute('content',T.bg);
+ document.querySelector('meta[name=apple-mobile-web-app-status-bar-style]')?.setAttribute('content',T.dark?'black-translucent':'default');
+ try{localStorage.setItem('theme',k)}catch(e){}}
+try{THEME_KEY=localStorage.getItem('theme')||'auto'}catch(e){}
+applyTheme(THEME_KEY);
+matchMedia('(prefers-color-scheme: light)').addEventListener?.('change',()=>{if(THEME_KEY==='auto'){applyTheme('auto');window.reTheme&&reTheme()}});
+</script>
 <link rel="apple-touch-icon" href="/static/icon-180.png">
 <link rel="icon" type="image/png" href="/static/icon-192.png">
 <title>وكيل التداول</title>
@@ -16,14 +36,15 @@
 <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
 <script>window.LightweightCharts||document.write('<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"><\/script>')</script>
 <style>
-:root{--bg:#0b0f14;--card:#121821;--line:#1f2a36;--tx:#e6edf3;--mut:#8b98a7;--up:#21c08b;--dn:#f05a5a;--acc:#4da3ff;--warn:#f2b84b}
+:root{--bg:#0b0f14;--card:#121821;--line:#1f2a36;--grid:#151d27;--tx:#e6edf3;--mut:#8b98a7;--soft:#455261;--up:#21c08b;--dn:#f05a5a;--acc:#4da3ff;--warn:#f2b84b;--onacc:#04121f}
+body,.card,header,nav,.kpi,button{transition:background-color .25s,color .25s,border-color .25s}
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--tx);font-family:'IBM Plex Sans Arabic',system-ui,sans-serif;font-size:14px;padding-bottom:76px}
 .num{font-family:'JetBrains Mono',monospace;direction:ltr;unicode-bidi:embed}
-header{position:sticky;top:0;z-index:5;background:rgba(11,15,20,.92);backdrop-filter:blur(8px);padding:12px 16px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line)}
+header{position:sticky;top:0;z-index:5;background:color-mix(in srgb,var(--bg) 92%,transparent);backdrop-filter:blur(8px);padding:12px 16px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line)}
 header h1{font-size:16px;font-weight:700}
 .pill{font-size:11px;padding:3px 9px;border-radius:99px;background:var(--line);color:var(--mut)}
-.pill.on{background:rgba(33,192,139,.15);color:var(--up)}.pill.off{background:rgba(240,90,90,.15);color:var(--dn)}.pill.w{background:rgba(242,184,75,.15);color:var(--warn)}
+.pill.on{background:color-mix(in srgb,var(--up) 15%,transparent);color:var(--up)}.pill.off{background:color-mix(in srgb,var(--dn) 15%,transparent);color:var(--dn)}.pill.w{background:color-mix(in srgb,var(--warn) 15%,transparent);color:var(--warn)}
 main{padding:12px 16px;max-width:900px;margin:auto}
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:12px}
 .card h2{font-size:13px;color:var(--mut);font-weight:500;margin-bottom:10px}
@@ -36,7 +57,7 @@ main{padding:12px 16px;max-width:900px;margin:auto}
 .btns{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 button{font-family:inherit;font-size:14px;border:0;border-radius:10px;padding:12px;background:var(--line);color:var(--tx);font-weight:500}
 button.kill{grid-column:1/-1;background:var(--dn);color:#fff;font-weight:700;font-size:15px}
-button.pri{background:var(--acc);color:#04121f}
+button.pri{background:var(--acc);color:var(--onacc)}
 .row{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--line);gap:8px}
 .row:last-child{border:0}
 .tag{font-size:11px;padding:2px 7px;border-radius:6px;background:var(--bg);color:var(--mut)}
@@ -49,18 +70,18 @@ nav a.act{color:var(--acc)}nav a span{display:block;font-size:18px}
 #chart,#eq{height:300px}#eq{height:180px}
 select{background:var(--bg);color:var(--tx);border:1px solid var(--line);border-radius:8px;padding:8px;font-family:inherit;width:100%}
 .ev{font-size:12.5px;padding:8px 0;border-bottom:1px solid var(--line);line-height:1.6}.ev time{color:var(--mut);font-size:11px;margin-inline-end:6px}
-.ev.error{color:var(--dn)}.ev.warn{color:var(--warn)}.ev.trade{color:var(--tx)}.ev.learn{color:#b48cff}
+.ev.error{color:var(--dn)}.ev.warn{color:var(--warn)}.ev.trade{color:var(--tx)}.ev.learn{color:#9b6ef3}
 .bar{height:6px;border-radius:3px;background:var(--bg);overflow:hidden;margin-top:6px}.bar i{display:block;height:100%;background:var(--acc)}
 #login{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;z-index:20;padding:16px}
 #login .card{width:100%;max-width:360px}
 input{width:100%;padding:12px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--tx);font-size:16px;margin:10px 0;font-family:inherit}
-.banner{background:rgba(240,90,90,.12);border:1px solid var(--dn);color:var(--dn);border-radius:12px;padding:12px;margin-bottom:12px;display:none}
+.banner{background:color-mix(in srgb,var(--dn) 12%,transparent);border:1px solid var(--dn);color:var(--dn);border-radius:12px;padding:12px;margin-bottom:12px;display:none}
 .click{cursor:pointer}.click:active{opacity:.6}
 header{padding-top:max(12px,env(safe-area-inset-top))}
 .rdy{border-radius:14px;padding:14px;margin-bottom:12px;border:1px solid var(--line)}
-.rdy.not_ready{background:rgba(240,90,90,.08);border-color:rgba(240,90,90,.4)}
-.rdy.close{background:rgba(242,184,75,.08);border-color:rgba(242,184,75,.4)}
-.rdy.ready{background:rgba(33,192,139,.08);border-color:rgba(33,192,139,.4)}
+.rdy.not_ready{background:color-mix(in srgb,var(--dn) 8%,transparent);border-color:color-mix(in srgb,var(--dn) 40%,transparent)}
+.rdy.close{background:color-mix(in srgb,var(--warn) 8%,transparent);border-color:color-mix(in srgb,var(--warn) 40%,transparent)}
+.rdy.ready{background:color-mix(in srgb,var(--up) 8%,transparent);border-color:color-mix(in srgb,var(--up) 40%,transparent)}
 .chk{display:flex;justify-content:space-between;gap:8px;font-size:12.5px;padding:6px 0;border-bottom:1px dashed var(--line)}.chk:last-child{border:0}
 .legend{display:flex;gap:14px;font-size:11px;color:var(--mut);margin-top:6px}.legend i{display:inline-block;width:12px;height:3px;border-radius:2px;vertical-align:middle;margin-inline-end:4px}
 .hours{direction:ltr;display:grid;grid-template-columns:repeat(24,1fr);gap:2px;align-items:end;height:70px;margin-top:6px}
@@ -84,17 +105,24 @@ header{padding-top:max(12px,env(safe-area-inset-top))}
 .vote .v{font-size:16px;width:22px;text-align:center}
 .gene{display:inline-block;background:var(--bg);border-radius:8px;padding:5px 8px;margin:3px 0 3px 4px;font-size:11.5px}
 #gch{height:200px}
+#thm{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:30;display:none;align-items:flex-end;justify-content:center}
+#thm .sheet{background:var(--card);width:100%;max-width:600px;border-radius:18px 18px 0 0;padding:16px 16px calc(16px + env(safe-area-inset-bottom))}
+.thgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.th{border-radius:12px;padding:6px;border:2px solid var(--line);background:none;text-align:center;font-size:12px;color:var(--tx)}
+.th.sel{border-color:var(--acc)}
+.th .pv{height:64px;border-radius:8px;padding:6px;display:flex;flex-direction:column;gap:4px;margin-bottom:6px;overflow:hidden}
+.th .pv i{display:block;border-radius:4px}
 .rfb{background:var(--line);border-radius:99px;width:30px;height:24px;padding:0;font-size:13px;line-height:24px}
 .rfb.spin{animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
-#upd{display:none;position:fixed;left:16px;right:16px;bottom:calc(76px + env(safe-area-inset-bottom));z-index:15;background:var(--acc);color:#04121f;border-radius:12px;padding:12px 14px;font-weight:700;text-align:center;box-shadow:0 6px 24px rgba(0,0,0,.4)}
-.seg{display:flex;gap:6px}.seg button{flex:1;padding:9px;font-size:13px}.seg button.act{background:var(--acc);color:#04121f}
+#upd{display:none;position:fixed;left:16px;right:16px;bottom:calc(76px + env(safe-area-inset-bottom));z-index:15;background:var(--acc);color:var(--onacc);border-radius:12px;padding:12px 14px;font-weight:700;text-align:center;box-shadow:0 6px 24px rgba(0,0,0,.4)}
+.seg{display:flex;gap:6px}.seg button{flex:1;padding:9px;font-size:13px}.seg button.act{background:var(--acc);color:var(--onacc)}
 </style>
 </head>
 <body>
 <div id="login"><div class="card"><h2>🤖 وكيل التداول الذكي</h2><p class="mut" style="font-size:13px">أدخل كلمة مرور لوحة التحكم</p>
 <input id="pw" type="password" placeholder="كلمة المرور" onkeydown="if(event.key==='Enter')doLogin()"><button class="pri" style="width:100%" onclick="doLogin()">دخول</button><p id="lerr" class="dn" style="margin-top:8px"></p></div></div>
 
-<header><h1>🤖 الوكيل الذكي</h1><div style="display:flex;gap:6px;align-items:center"><button id="rfb" class="rfb" onclick="hardRefresh()" aria-label="تحديث الصفحة">🔄</button><span id="ver" class="pill num">—</span><span id="mode" class="pill">—</span><span id="run" class="pill">—</span></div></header>
+<header><h1>🤖 الوكيل الذكي</h1><div style="display:flex;gap:6px;align-items:center"><button class="rfb" onclick="openThemes()" aria-label="المظهر">🎨</button><button id="rfb" class="rfb" onclick="hardRefresh()" aria-label="تحديث الصفحة">🔄</button><span id="ver" class="pill num">—</span><span id="mode" class="pill">—</span><span id="run" class="pill">—</span></div></header>
 
 <main>
 <div id="frozen" class="banner"></div>
@@ -105,7 +133,7 @@ header{padding-top:max(12px,env(safe-area-inset-top))}
     <div class="big num" id="eqv">—</div>
     <div id="eqd" class="mut" style="margin-top:4px"></div>
     <div id="eq" style="margin-top:10px"></div>
-    <div class="legend"><span><i style="background:#4da3ff"></i>الوكيل</span><span><i style="background:#f2b84b"></i>لو احتفظت بالبيتكوين</span></div>
+    <div class="legend"><span><i style="background:var(--acc)"></i>الوكيل</span><span><i style="background:var(--warn)"></i>لو احتفظت بالبيتكوين</span></div>
   </div>
   <div id="ready" class="rdy click" onclick="go('perf')"></div>
   <div class="card click" onclick="go('mkt')"><h2>🌡️ مزاج السوق</h2><div id="mood"></div></div>
@@ -132,7 +160,7 @@ header{padding-top:max(12px,env(safe-area-inset-top))}
   <div class="card"><h2>🐋 رادار الحيتان <span id="rst" class="mut"></span></h2>
     <canvas id="radar" width="760" height="760"></canvas>
     <div id="rtip" class="mut">اضغط على أي فقاعة لتفاصيلها</div>
-    <div class="legend" style="justify-content:center;flex-wrap:wrap"><span><i style="background:#21c08b"></i>حوت يشتري</span><span><i style="background:#f05a5a"></i>حوت يبيع</span><span><i style="background:#f2b84b"></i>تصفية مشترين</span><span><i style="background:#b48cff"></i>تصفية بائعين</span></div>
+    <div class="legend" style="justify-content:center;flex-wrap:wrap"><span><i style="background:var(--up)"></i>حوت يشتري</span><span><i style="background:var(--dn)"></i>حوت يبيع</span><span><i style="background:var(--warn)"></i>تصفية مشترين</span><span><i style="background:#9b6ef3"></i>تصفية بائعين</span></div>
     <p class="reasons" style="text-align:center">المركز = الآن، الحافة = قبل 30 دقيقة · حجم الفقاعة = حجم الصفقة</p>
     <h2 style="margin-top:14px">صافي تدفق الحيتان (آخر ساعة)</h2><div id="rflow"></div>
   </div>
@@ -148,7 +176,7 @@ header{padding-top:max(12px,env(safe-area-inset-top))}
 <section class="tab" id="t-perf">
   <div class="card"><h2>🎯 الجاهزية للمال الحقيقي</h2><div id="rdet"></div></div>
   <div class="card"><h2>👻 الوكلاء الأشباح — أي جرأة تربح أكثر؟</h2><div id="gch"></div>
-    <div class="legend" style="flex-wrap:wrap"><span><i style="background:#4da3ff"></i>الوكيل الحقيقي</span><span><i style="background:#21c08b"></i>🐢 المحافظ</span><span><i style="background:#f2b84b"></i>⚖️ المتوازن</span><span><i style="background:#f05a5a"></i>🔥 المغامر</span></div>
+    <div class="legend" style="flex-wrap:wrap"><span><i style="background:var(--acc)"></i>الوكيل الحقيقي</span><span><i style="background:var(--up)"></i>🐢 المحافظ</span><span><i style="background:var(--warn)"></i>⚖️ المتوازن</span><span><i style="background:var(--dn)"></i>🔥 المغامر</span></div>
     <div id="ghosts" style="margin-top:8px"></div></div>
   <div class="card"><h2>🏛️ هل المجلس محق؟</h2><div id="cstats"></div></div>
   <div class="card"><h2>مقاييس الأداء</h2><div class="grid" id="pk"></div></div>
@@ -181,6 +209,7 @@ header{padding-top:max(12px,env(safe-area-inset-top))}
   <a href="#" data-t="log"><span>📜</span>السجل</a>
 </nav>
 
+<div id="thm" onclick="if(event.target===this)this.style.display='none'"><div class="sheet"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><b style="font-size:16px">🎨 المظهر</b><button onclick="$('thm').style.display='none'" style="padding:6px 12px">✕</button></div><div id="thlist" class="thgrid"></div><p class="reasons" style="margin-top:10px">«تلقائي» يتبع وضع جوالك: نهاري في النهار وليلي في الليل (حسب إعداد الآيفون).</p></div></div>
 <div id="upd" class="click" onclick="hardRefresh()">✨ وصل إصدار جديد — اضغط للتحديث</div>
 <div id="modal" onclick="if(event.target===this)closeTrade()"><div class="sheet">
   <div style="display:flex;justify-content:space-between;align-items:center"><b id="mt" style="font-size:16px"></b><button onclick="closeTrade()" style="padding:6px 12px">✕</button></div>
@@ -211,13 +240,13 @@ let mChart,mSeries;
 async function openTrade(id){$('modal').style.display='flex';$('mt').textContent='جارٍ التحميل…';$('mbody').innerHTML='';
  try{const d=await api('/api/trade/'+encodeURIComponent(id)),t=d.trade;
   $('mt').innerHTML=`${t.symbol} <span class="tag ${t.side[0]}">${SIDE[t.side]} ${t.market||''} x${t.leverage||1}</span>`;
-  if(!mChart){mChart=LightweightCharts.createChart($('mchart'),chartOpts($('mchart'),260));mSeries=mChart.addCandlestickSeries({upColor:'#21c08b',downColor:'#f05a5a',borderVisible:false,wickUpColor:'#21c08b',wickDownColor:'#f05a5a'})}
+  if(!mChart){mChart=LightweightCharts.createChart($('mchart'),chartOpts($('mchart'),260));mSeries=mChart.addCandlestickSeries(candleOpts())}
   mChart.applyOptions({width:$('mchart').clientWidth});mSeries.setData(d.candles);(mSeries._pl||[]).forEach(l=>mSeries.removePriceLine(l));mSeries._pl=[];
   const pl=(p,c,ti,st=0)=>p&&mSeries._pl.push(mSeries.createPriceLine({price:p,color:c,lineWidth:1,lineStyle:st,title:ti}));
-  pl(t.entry,'#4da3ff','دخول');pl(t.init_stop||t.stop,'#f05a5a','وقف',2);pl(t.target,'#21c08b','هدف',2);if(d.closed)pl(t.exit,'#f2b84b','خروج');
+  pl(t.entry,T.acc,'دخول');pl(t.init_stop||t.stop,T.dn,'وقف',2);pl(t.target,T.up,'هدف',2);if(d.closed)pl(t.exit,T.warn,'خروج');
   const snap=x=>{let b=d.candles[0]?.time;for(const c of d.candles){if(c.time<=x)b=c.time}return b};
-  const mk=[{time:snap(t.opened),position:t.side==='long'?'belowBar':'aboveBar',color:'#4da3ff',shape:t.side==='long'?'arrowUp':'arrowDown',text:'دخول'}];
-  if(d.closed&&t.closed)mk.push({time:snap(t.closed),position:'aboveBar',color:'#f2b84b',shape:'circle',text:'خروج'});
+  const mk=[{time:snap(t.opened),position:t.side==='long'?'belowBar':'aboveBar',color:T.acc,shape:t.side==='long'?'arrowUp':'arrowDown',text:'دخول'}];
+  if(d.closed&&t.closed)mk.push({time:snap(t.closed),position:'aboveBar',color:T.warn,shape:'circle',text:'خروج'});
   if(d.candles.length)mSeries.setMarkers(mk.sort((a,b)=>a.time-b.time));mChart.timeScale().fitContent();
   const res=d.closed?`<div class="grid" style="margin:8px 0"><div class="kpi"><small>النتيجة</small><b class="num ${t.pnl>=0?'up':'dn'}">${t.pnl>=0?'+':''}${f2(t.pnl)}$</b></div><div class="kpi"><small>بالمخاطرة</small><b class="num">${f2(t.r_mult)}R</b></div><div class="kpi"><small>الخروج</small><b style="font-size:13px">${EXIT[t.exit_reason]||t.exit_reason}</b></div><div class="kpi"><small>المدة</small><b class="num" style="font-size:13px">${dur(t.closed-t.opened)}</b></div></div>`:'';
   const cn=d.council;const cHtml=cn?`<div class="card" style="margin:10px 0"><h2>🏛️ تصويت المجلس: ${cn.yes}/3 ${cn.approved?'✅ موافقة':'❌ رفض'}</h2>${cn.votes.map(v=>`<div class="vote"><span class="v">${v.vote?'✅':'❌'}</span><div><b>${v.icon} ${v.name}</b><div class="reasons" style="margin:0">${v.reason}</div></div></div>`).join('')}</div>`:'';
@@ -228,12 +257,26 @@ function dur(s){const h=s/3600;return h<1?Math.round(s/60)+'د':h<48?f2(h,1)+'س
 async function ntf(a){try{await api('/api/notify',{method:'POST',body:JSON.stringify({action:a})});if(a==='test')alert('أُرسل إشعار تجريبي — يجب أن يصل لجوالك خلال ثوانٍ');refresh()}catch(e){}}
 function cp(t){navigator.clipboard?.writeText(t).then(()=>alert('تم النسخ'))}
 
-function chartOpts(el,h){return{width:el.clientWidth,height:h,layout:{background:{color:'transparent'},textColor:'#8b98a7',fontFamily:'JetBrains Mono'},grid:{vertLines:{color:'#151d27'},horzLines:{color:'#151d27'}},rightPriceScale:{borderColor:'#1f2a36'},timeScale:{borderColor:'#1f2a36',timeVisible:true},crosshair:{mode:0}}}
-function initChart(){if(chart)return;chart=LightweightCharts.createChart($('chart'),chartOpts($('chart'),300));cs=chart.addCandlestickSeries({upColor:'#21c08b',downColor:'#f05a5a',borderVisible:false,wickUpColor:'#21c08b',wickDownColor:'#f05a5a'});addEventListener('resize',()=>chart.applyOptions({width:$('chart').clientWidth}))}
+function themeOpts(){return{layout:{background:{color:'transparent'},textColor:T.mut,fontFamily:'JetBrains Mono'},grid:{vertLines:{color:T.grid},horzLines:{color:T.grid}},rightPriceScale:{borderColor:T.line},timeScale:{borderColor:T.line,timeVisible:true}}}
+function chartOpts(el,h){return{width:el.clientWidth,height:h,...themeOpts(),crosshair:{mode:0}}}
+function candleOpts(){return{upColor:T.up,downColor:T.dn,borderVisible:false,wickUpColor:T.up,wickDownColor:T.dn}}
+function reTheme(){const o=themeOpts();chart&&chart.applyOptions(o);mChart&&mChart.applyOptions(o);cs&&cs.applyOptions(candleOpts());mSeries&&mSeries.applyOptions(candleOpts());
+ gChart&&gChart.applyOptions({layout:o.layout,grid:o.grid,rightPriceScale:o.rightPriceScale});
+ eqChart&&eqChart.applyOptions({layout:o.layout});eqLine&&eqLine.applyOptions({lineColor:T.acc,topColor:T.acc+'40',bottomColor:T.acc+'00'});eqChart&&eqChart._btc&&eqChart._btc.applyOptions({color:T.warn});
+ if(gSeries.real){gSeries.real.applyOptions({color:T.acc});gSeries.conservative.applyOptions({color:T.up});gSeries.balanced.applyOptions({color:T.warn});gSeries.aggressive.applyOptions({color:T.dn})}
+ S&&render(S)}
+function openThemes(){const ks=['auto',...Object.keys(THEMES)];
+ $('thlist').innerHTML=ks.map(k=>{const t=k==='auto'?null:THEMES[k];
+  const pv=t?`<div class="pv" style="background:${t.bg}"><i style="height:10px;background:${t.card};border:1px solid ${t.line}"></i><i style="height:22px;background:${t.card};border:1px solid ${t.line};position:relative"><b style="position:absolute;left:4px;right:4px;bottom:5px;height:3px;border-radius:2px;background:${t.acc}"></b></i><i style="height:8px;width:60%;background:${t.up}"></i></div>`
+   :`<div class="pv" style="background:linear-gradient(135deg,${THEMES.day.bg} 50%,${THEMES.night.bg} 50%);align-items:center;justify-content:center;font-size:24px">🌓</div>`;
+  return `<button class="th ${THEME_KEY===k?'sel':''}" onclick="setTheme('${k}')">${pv}${t?t.icon+' '+t.name:'🌓 تلقائي'}</button>`}).join('');
+ $('thm').style.display='flex'}
+function setTheme(k){applyTheme(k);reTheme();openThemes()}
+function initChart(){if(chart)return;chart=LightweightCharts.createChart($('chart'),chartOpts($('chart'),300));cs=chart.addCandlestickSeries(candleOpts());addEventListener('resize',()=>chart.applyOptions({width:$('chart').clientWidth}))}
 async function loadChart(){const s=$('sym').value;if(!s||!cs)return;try{const d=await api(`/api/candles?symbol=${encodeURIComponent(s)}&tf=${$('tf').value}`);cs.setData(d.candles.map(c=>({time:c.ts/1000,open:c.open,high:c.high,low:c.low,close:c.close})));lines.forEach(l=>cs.removePriceLine(l));lines=[];
  const z=[...d.fvgs.slice(-4).map(x=>({...x,k:'FVG'})),...d.order_blocks.slice(-3).map(x=>({...x,k:'OB'}))];
- z.forEach(x=>{const c=x.type==='bull'?'#21c08b':'#f05a5a';[x.top,x.bottom].forEach((p,i)=>lines.push(cs.createPriceLine({price:p,color:c+'99',lineWidth:1,lineStyle:2,axisLabelVisible:false,title:i?'':x.k})))});
- d.trades.forEach(t=>{lines.push(cs.createPriceLine({price:t.entry,color:'#4da3ff',lineWidth:2,title:'دخول'}));lines.push(cs.createPriceLine({price:t.stop,color:'#f05a5a',lineWidth:1,title:'وقف'}));lines.push(cs.createPriceLine({price:t.target,color:'#21c08b',lineWidth:1,title:'هدف'}))});
+ z.forEach(x=>{const c=x.type==='bull'?T.up:T.dn;[x.top,x.bottom].forEach((p,i)=>lines.push(cs.createPriceLine({price:p,color:c+'99',lineWidth:1,lineStyle:2,axisLabelVisible:false,title:i?'':x.k})))});
+ d.trades.forEach(t=>{lines.push(cs.createPriceLine({price:t.entry,color:T.acc,lineWidth:2,title:'دخول'}));lines.push(cs.createPriceLine({price:t.stop,color:T.dn,lineWidth:1,title:'وقف'}));lines.push(cs.createPriceLine({price:t.target,color:T.up,lineWidth:1,title:'هدف'}))});
  chart.timeScale().fitContent()}catch(e){}}
 
 let LOADED_VER=null;
@@ -249,8 +292,8 @@ function render(s){S=s;if(s.version){if(LOADED_VER===null)LOADED_VER=s.version;e
  $('rk').textContent=(s.risk_now*100).toFixed(1)+'%';$('ls').textContent=s.loss_streak;$('st').textContent=s.status;
  $('pos').innerHTML=s.positions.length?s.positions.map(p=>`<div class="row click" onclick="openTrade('${p.id}')"><div><b>${p.symbol}</b> <span class="tag ${p.side[0]}">${SIDE[p.side]} ${p.market} x${p.leverage}</span><div class="reasons">${p.strategy_ar} · دخول <span class="num">${fp(p.entry)}</span> · وقف <span class="num">${fp(p.stop)}</span> · هدف <span class="num">${fp(p.target)}</span><br>${(p.reasons||[]).slice(0,3).join(' • ')}</div></div><div style="text-align:left"><b class="num ${p.upnl>=0?'up':'dn'}">${p.upnl>=0?'+':''}${f2(p.upnl)}$</b><div class="num mut" style="font-size:11px">${f2(p.r)}R</div></div></div>`).join(''):'<p class="mut">لا توجد صفقات — الوكيل يراقب ويبحث عن فرصة مناسبة</p>';
  // equity chart
- if(!eqChart){eqChart=LightweightCharts.createChart($('eq'),{...chartOpts($('eq'),180),timeScale:{visible:false},rightPriceScale:{visible:false},grid:{vertLines:{visible:false},horzLines:{visible:false}}});eqLine=eqChart.addAreaSeries({lineColor:'#4da3ff',topColor:'rgba(77,163,255,.25)',bottomColor:'rgba(77,163,255,0)',lineWidth:2});addEventListener('resize',()=>eqChart.applyOptions({width:$('eq').clientWidth}))}
- if(!eqChart._btc)eqChart._btc=eqChart.addLineSeries({color:'#f2b84b',lineWidth:2,lineStyle:2,priceLineVisible:false,lastValueVisible:false});
+ if(!eqChart){eqChart=LightweightCharts.createChart($('eq'),{...chartOpts($('eq'),180),timeScale:{visible:false},rightPriceScale:{visible:false},grid:{vertLines:{visible:false},horzLines:{visible:false}}});eqLine=eqChart.addAreaSeries({lineColor:T.acc,topColor:T.acc+'40',bottomColor:T.acc+'00',lineWidth:2});addEventListener('resize',()=>eqChart.applyOptions({width:$('eq').clientWidth}))}
+ if(!eqChart._btc)eqChart._btc=eqChart.addLineSeries({color:T.warn,lineWidth:2,lineStyle:2,priceLineVisible:false,lastValueVisible:false});
  const ec=[],bc=[];let lt=0,b0=null,e0=null;s.equity_curve.forEach(e=>{const t=Math.floor(e.ts);if(t<=lt)return;lt=t;ec.push({time:t,value:e.value});if(e.btc){if(b0===null){b0=e.btc;e0=e.value}bc.push({time:t,value:e0*e.btc/b0})}});eqLine.setData(ec);eqChart._btc.setData(bc);
  // market
  $('uni').textContent=`(${s.analysis.length})`;
@@ -271,17 +314,17 @@ const usd=x=>x>=1e6?'$'+f2(x/1e6,1)+'M':'$'+f2(x/1e3,0)+'K';
 function fngColor(v){return v<25?'#f05a5a':v<45?'#f2a54b':v<55?'#8b98a7':v<75?'#8fd17a':'#21c08b'}
 function renderMood(m){if(!m)return;const f=m.fng;let h='';
  if(f){const a=Math.PI*(1-f.value/100),x=48+40*Math.cos(a),y=50-40*Math.sin(a);
-  h+=`<div class="mood"><div class="gauge"><svg viewBox="0 0 96 56"><path d="M8 50 A40 40 0 0 1 88 50" fill="none" stroke="#1f2a36" stroke-width="8" stroke-linecap="round"/><path d="M8 50 A40 40 0 0 1 ${x.toFixed(1)} ${y.toFixed(1)}" fill="none" stroke="${fngColor(f.value)}" stroke-width="8" stroke-linecap="round"/></svg><b class="num" style="color:${fngColor(f.value)}">${f.value}</b></div>
+  h+=`<div class="mood"><div class="gauge"><svg viewBox="0 0 96 56"><path d="M8 50 A40 40 0 0 1 88 50" fill="none" style="stroke:var(--line)" stroke-width="8" stroke-linecap="round"/><path d="M8 50 A40 40 0 0 1 ${x.toFixed(1)} ${y.toFixed(1)}" fill="none" stroke="${fngColor(f.value)}" stroke-width="8" stroke-linecap="round"/></svg><b class="num" style="color:${fngColor(f.value)}">${f.value}</b></div>
   <div><b>${f.label_ar}</b><div class="reasons" style="margin:2px 0 0">مؤشر الخوف والطمع · معنويات الأخبار <span class="num ${m.news_score>0.1?'up':m.news_score<-0.1?'dn':''}">${m.news_score>0?'+':''}${f2(m.news_score,2)}</span></div></div></div>`}
  else h+='<p class="mut">جارٍ جلب مؤشر الخوف والطمع…</p>';
- if(m.blackout)h+=`<div class="banner" style="display:block;margin:10px 0 0;color:var(--warn);border-color:var(--warn);background:rgba(242,184,75,.1)">📅 إيقاف مؤقت للدخول: ${m.blackout.title} (${new Date(m.blackout.ts*1000).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})})</div>`;
+ if(m.blackout)h+=`<div class="banner" style="display:block;margin:10px 0 0;color:var(--warn);border-color:var(--warn);background:color-mix(in srgb,var(--warn) 10%,transparent)">📅 إيقاف مؤقت للدخول: ${m.blackout.title} (${new Date(m.blackout.ts*1000).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})})</div>`;
  else if(m.next_event)h+=`<p class="reasons" style="margin-top:8px">📅 الحدث المهم القادم: <b>${m.next_event.title}</b> · <span class="num">${new Date(m.next_event.ts*1000).toLocaleString('en-GB',{weekday:'short',hour:'2-digit',minute:'2-digit'})}</span> — يتوقف الدخول قبله بنصف ساعة</p>`;
  $('mood').innerHTML=h;
  $('news').innerHTML=m.news&&m.news.length?m.news.slice(0,15).map(n=>`<div class="ev news"><span class="dot" style="background:${n.score>0?'var(--up)':n.score<0?'var(--dn)':'var(--line)'}"></span><a href="${n.link}" target="_blank" rel="noopener" dir="ltr" style="unicode-bidi:plaintext">${n.title.replace(/</g,'&lt;')}</a><div class="reasons">${n.source} · ${ago(n.ts)}${n.coins.length?' · '+n.coins.map(c=>`<span class="chip">${c}</span>`).join(''):''}${n.severe?' · <b class="dn">⚠️ خبر خطير</b>':''}</div></div>`).join(''):'<p class="mut">لا أخبار بعد</p>'}
 let gChart,gSeries={};
 function renderGhosts(s){if(!s.ghosts)return;
  if(!gChart){gChart=LightweightCharts.createChart($('gch'),{...chartOpts($('gch'),200),rightPriceScale:{borderColor:'#1f2a36'},localization:{priceFormatter:v=>(v>=0?'+':'')+v.toFixed(1)+'%'}});
-  for(const[k,c]of[['real','#4da3ff'],['conservative','#21c08b'],['balanced','#f2b84b'],['aggressive','#f05a5a']])gSeries[k]=gChart.addLineSeries({color:c,lineWidth:2,priceLineVisible:false,lastValueVisible:false})}
+  for(const[k,c]of[['real',T.acc],['conservative',T.up],['balanced',T.warn],['aggressive',T.dn]])gSeries[k]=gChart.addLineSeries({color:c,lineWidth:2,priceLineVisible:false,lastValueVisible:false})}
  const norm=a=>{const o=[];let lt=0,b=null;(a||[]).forEach(e=>{const t=Math.floor(e.ts);if(t<=lt||!e.value)return;lt=t;if(b===null)b=e.value;o.push({time:t,value:(e.value/b-1)*100})});return o};
  gSeries.real.setData(norm(s.equity_curve));for(const k of['conservative','balanced','aggressive'])gSeries[k].setData(norm((s.ghost_curves||{})[k]));
  const best=s.ghosts.reduce((a,b)=>b.return>a.return?b:a);
@@ -301,7 +344,7 @@ function renderDarwin(d){if(!d)return;const st=Object.entries(d.strategies);
 
 // ---------------- رادار الحيتان
 let RD=null,rTimer=null,rAnim=null,rHits=[];
-const RC={buy:'#21c08b',sell:'#f05a5a',liq_long:'#f2b84b',liq_short:'#b48cff'};
+const RCf=()=>({buy:T.up,sell:T.dn,liq_long:T.warn,liq_short:'#9b6ef3'});let RC=RCf();
 const RK={buy:'حوت يشتري',sell:'حوت يبيع',liq_long:'تصفية مشترين',liq_short:'تصفية بائعين'};
 async function rFetch(){try{RD=await api('/api/radar');$('rst').textContent=RD.connected?'· 🟢 مباشر':'· ⚪ غير متصل';
  const mx=Math.max(1,...RD.flow.map(f=>Math.max(f.buy,f.sell)));
@@ -309,16 +352,16 @@ async function rFetch(){try{RD=await api('/api/radar');$('rst').textContent=RD.c
 function radarOn(){if(rTimer)return;rFetch();rTimer=setInterval(rFetch,4000);const loop=()=>{drawRadar();rAnim=requestAnimationFrame(loop)};loop()}
 function radarOff(){clearInterval(rTimer);rTimer=null;cancelAnimationFrame(rAnim);rAnim=null}
 function hsh(x){let h=0;for(const c of String(x))h=(h*31+c.charCodeAt(0))|0;return (h>>>0)/4294967295}
-function drawRadar(){const cv=$('radar'),c=cv.getContext('2d'),W=cv.width,C=W/2,R=W/2-46,now=Date.now()/1000;
+function drawRadar(){RC=RCf();const cv=$('radar'),c=cv.getContext('2d'),W=cv.width,C=W/2,R=W/2-46,now=Date.now()/1000;
  c.clearRect(0,0,W,W);c.save();c.translate(C,C);
- c.strokeStyle='#1f2a36';c.lineWidth=2;for(const k of[1/3,2/3,1]){c.beginPath();c.arc(0,0,R*k,0,7);c.stroke()}
- c.fillStyle='#455261';c.font='20px JetBrains Mono';c.textAlign='center';['10د','20د','30د'].forEach((t,i)=>c.fillText(t,0,-R*(i+1)/3+22));
+ c.strokeStyle=T.line;c.lineWidth=2;for(const k of[1/3,2/3,1]){c.beginPath();c.arc(0,0,R*k,0,7);c.stroke()}
+ c.fillStyle=T.soft;c.font='20px JetBrains Mono';c.textAlign='center';['10د','20د','30د'].forEach((t,i)=>c.fillText(t,0,-R*(i+1)/3+22));
  const syms=(RD&&RD.symbols.length?RD.symbols:['BTC','ETH','SOL']),N=syms.length;
  const sw=(now%6)/6*Math.PI*2,g=c.createConicGradient?c.createConicGradient(sw-0.9,0,0):null;
- if(g){g.addColorStop(0,'rgba(77,163,255,0)');g.addColorStop(0.14,'rgba(77,163,255,.22)');g.addColorStop(0.1433,'rgba(77,163,255,0)');c.fillStyle=g;c.beginPath();c.moveTo(0,0);c.arc(0,0,R,sw-0.9,sw);c.fill()}
- c.strokeStyle='rgba(77,163,255,.7)';c.lineWidth=2;c.beginPath();c.moveTo(0,0);c.lineTo(R*Math.cos(sw),R*Math.sin(sw));c.stroke();
+ if(g){g.addColorStop(0,T.acc+'00');g.addColorStop(0.14,T.acc+'38');g.addColorStop(0.1433,T.acc+'00');c.fillStyle=g;c.beginPath();c.moveTo(0,0);c.arc(0,0,R,sw-0.9,sw);c.fill()}
+ c.strokeStyle=T.acc+'b3';c.lineWidth=2;c.beginPath();c.moveTo(0,0);c.lineTo(R*Math.cos(sw),R*Math.sin(sw));c.stroke();
  const active=new Set((RD?RD.events:[]).map(e=>e.base));
- c.font='bold 19px JetBrains Mono';syms.forEach((s,i)=>{const a=i/N*Math.PI*2-Math.PI/2;c.fillStyle=active.has(s)?'#c9d4df':'#2c3846';c.fillText(s,(R+26)*Math.cos(a),(R+26)*Math.sin(a)+7)});
+ c.font='bold 19px JetBrains Mono';syms.forEach((s,i)=>{const a=i/N*Math.PI*2-Math.PI/2;c.fillStyle=active.has(s)?T.tx:T.soft;c.fillText(s,(R+26)*Math.cos(a),(R+26)*Math.sin(a)+7)});
  rHits=[];(RD?RD.events:[]).forEach(e=>{const i=syms.indexOf(e.base);if(i<0)return;const age=Math.max(0,now-e.ts);if(age>RD.window)return;
   const a=(i+(hsh(e.ts+e.base)-.5)*.7)/N*Math.PI*2-Math.PI/2,r=R*(age/RD.window)*0.94+R*0.04,x=r*Math.cos(a),y=r*Math.sin(a);
   const sz=Math.min(34,5+Math.sqrt(e.usd/40000)*3.2),alpha=1-0.65*age/RD.window;
