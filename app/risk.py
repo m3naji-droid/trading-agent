@@ -32,12 +32,12 @@ class RiskManager:
         x = max(0.0, min(1.0, (confidence - lo) / (hi - lo)))
         return settings.risk_min + x * (settings.risk_max - settings.risk_min)
 
-    def size(self, equity, entry, stop, confidence, atr_pct, open_notional, slots_left):
+    def size(self, equity, entry, stop, confidence, atr_pct, open_notional, slots_left, meme=False):
         """
         يحدد الكمية والرافعة والسوق (spot/futures).
         الرافعة يقررها الوكيل حسب الثقة والتذبذب، بسقف صارم MAX_LEVERAGE.
         """
-        rp = self.risk_pct(confidence)
+        rp = self.risk_pct(confidence) * (settings.meme_risk_mult if meme else 1.0)
         risk_usd = equity * rp
         dist = abs(entry - stop)
         if dist <= 0 or equity <= 0:
@@ -49,6 +49,8 @@ class RiskManager:
         conf_cap = 1 + (settings.max_leverage - 1) * max(0, (confidence - settings.min_confidence) / 0.3)
         vol_cap = max(1.0, 0.02 / max(atr_pct, 1e-4) * 2)
         lev_cap = int(max(1, min(settings.max_leverage, conf_cap, vol_cap)))
+        if meme:
+            lev_cap = min(lev_cap, settings.meme_max_leverage)
 
         margin_budget = equity / max(1, slots_left + 0) * 0.95
         lev = max(1, math.ceil(notional / max(margin_budget, 1e-9)))

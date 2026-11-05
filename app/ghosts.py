@@ -46,15 +46,19 @@ class GhostBook:
             eq += (px - p["entry"]) * p["qty"] * (1 if p["side"] == "long" else -1)
         return eq
 
-    def wants(self, conf, council_yes, risk_off, blackout):
+    def wants(self, conf, council_yes, risk_off, blackout, meme=False):
         p = self.p
+        if meme and sum(1 for x in self.positions.values() if x.get("meme")) >= settings.meme_max_positions:
+            return False
         if blackout and p["respect_risk_off"]:
             return False
         if risk_off and p["respect_risk_off"]:
             return False
         return conf >= p["min_conf"] and council_yes >= p["council"] and len(self.positions) < p["max_pos"]
 
-    def open(self, sym, sig, price, atr, genome, prices):
+    def open(self, sym, sig, price, atr, genome, prices, meme=False, spot_only=False):
+        if spot_only and sig.side == "short":
+            return
         if any(x["symbol"] == sym for x in self.positions.values()):
             return
         g = genome
@@ -66,10 +70,11 @@ class GhostBook:
         dist = risk0 * g["stop"]
         fill = price * (1 + d * SLIP)
         eq = self.equity(prices)
-        qty = eq * self.p["risk"] / dist
+        qty = eq * self.p["risk"] * (settings.meme_risk_mult if meme else 1) / dist
         notional = qty * fill
         budget = eq / self.p["max_pos"]
-        lev = min(self.p["max_lev"], max(1, math.ceil(notional / max(budget, 1e-9))))
+        max_lev = 1 if spot_only else min(self.p["max_lev"], settings.meme_max_leverage) if meme else self.p["max_lev"]
+        lev = min(max_lev, max(1, math.ceil(notional / max(budget, 1e-9))))
         if notional > budget * lev:
             notional = budget * lev
             qty = notional / fill
@@ -82,7 +87,7 @@ class GhostBook:
                                "stop": fill - d * dist, "init_stop": fill - d * dist,
                                "target": fill + d * dist * rr0 * g["rr"], "atr": atr, "best": fill,
                                "genome": g, "risk_usd": qty * dist, "opened": time.time(), "fees": fee,
-                               "strategy": sig.strategy}
+                               "strategy": sig.strategy, "meme": meme}
 
     def manage(self, prices):
         closed = []
@@ -148,10 +153,11 @@ class Ghosts:
     def save(self):
         memory.kv_set("ghosts", {k: b.dump() for k, b in self.books.items()})
 
-    def consider(self, sym, sig, conf, council_yes, price, atr, genome, risk_off, blackout, prices):
+    def consider(self, sym, sig, conf, council_yes, price, atr, genome, risk_off, blackout, prices,
+                 meme=False, spot_only=False):
         for b in self.books.values():
-            if b.wants(conf, council_yes, risk_off, blackout):
-                b.open(sym, sig, price, atr, genome, prices)
+            if b.wants(conf, council_yes, risk_off, blackout, meme):
+                b.open(sym, sig, price, atr, genome, prices, meme, spot_only)
 
     def tick(self, prices, btc):
         for b in self.books.values():

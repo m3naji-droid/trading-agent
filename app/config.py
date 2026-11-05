@@ -45,6 +45,15 @@ class Settings:
     scan_interval_sec: int = _i("SCAN_INTERVAL_SEC", 60)
     max_open_positions: int = _i("MAX_OPEN_POSITIONS", 4)
 
+    # ---- خانة العملات الميمية (قواعد أشد) ----
+    memes: tuple = tuple(x.strip().upper() for x in os.getenv(
+        "MEMES", "DOGE,SHIB,PEPE,WIF,BONK,FLOKI,PENGU,TRUMP,BOME,NEIRO").split(",") if x.strip())
+    meme_slots: int = _i("MEME_SLOTS", 5)
+    meme_min_volume: float = _f("MEME_MIN_VOLUME", 10_000_000)
+    meme_risk_mult: float = _f("MEME_RISK_MULT", 0.5)     # نصف المخاطرة
+    meme_max_leverage: int = _i("MEME_MAX_LEVERAGE", 2)
+    meme_max_positions: int = _i("MEME_MAX_POSITIONS", 1)
+
     # ---- المخاطر ----
     risk_min: float = _f("RISK_MIN", 0.01)            # 1%
     risk_max: float = _f("RISK_MAX", 0.02)            # 2%

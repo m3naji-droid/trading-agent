@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 from .config import settings
 from . import memory
-from .exchange import make_clients, build_universe, ohlcv_df, check_key_permissions, fut_symbol
+from .exchange import make_clients, build_universe, ohlcv_df, check_key_permissions, fut_symbol, build_memes, has_futures
 from . import notify, performance
 from .indicators import enrich
 from .regime import detect_regime, HIGH_RISK, TREND_UP, TREND_DOWN, LABELS_AR
@@ -74,6 +74,8 @@ class Agent:
         self.funding, self._fund_t = {}, 0
         self.oi, self._oi_t = {}, {}
         self.gate = memory.kv_get("gate", {}) or {}
+        self.gate_meme = memory.kv_get("gate_meme", {}) or {}
+        self.memes = set()
         self.study = memory.kv_get("study", {}) or {}
         self.study_progress = {"phase": "", "done": len(self.study.get("done", [])), "total": 0, "pct": 0.0}
         self._last_gate_check = 0
@@ -146,6 +148,17 @@ class Agent:
                 self.spot, self.fut, settings.universe_size, settings.min_quote_volume)
             if "BTC/USDT" not in uni:
                 uni.insert(0, "BTC/USDT")
+            try:
+                memes = await build_memes(self.spot, self.fut, settings.meme_slots, settings.meme_min_volume)
+            except Exception as e:
+                memes = []
+                log.warning(f"memes: {e}")
+            if memes and set(memes) != self.memes:
+                memory.log_event(f"🐸 خانة العملات الميمية ({len(memes)}): {'، '.join(m.split('/')[0] for m in memes)} — "
+                                 f"مخاطرة {settings.meme_risk_mult:.0%} من المعتاد، رافعة حتى x{settings.meme_max_leverage}، "
+                                 f"صفقة ميمية واحدة كحد أقصى")
+            self.memes = set(memes)
+            uni = uni + [m for m in memes if m not in uni]
             added = [s for s in uni if s not in self.universe]
             self.universe = uni
             self._last_universe = time.time()
@@ -266,7 +279,7 @@ class Agent:
             "rsi": round(float(ctx["df"]["rsi"].iloc[-1]), 1),
             "signals": [x.strategy for x in sigs], "learned": sym in self.pretrained,
             "rank": (self.rank_info.get(sym) or {}).get("rank"),
-            "rs": self.rs_rank.get(base), "near": [x.strategy for x in near],
+            "rs": self.rs_rank.get(base), "near": [x.strategy for x in near], "meme": self.is_meme(sym),
         }
         return [(sym, ctx, sg) for sg in sigs]
 
@@ -290,16 +303,19 @@ class Agent:
             if sym in self.pretrained and allowed and accepts(self.darwin.champion(sig.strategy), metrics(ctx, sig)):
                 self.ghosts.consider(sym, sig, conf, cn["yes"], price, float(ctx["df"]["atr"].iloc[-1]),
                                      self.darwin.champion(sig.strategy), self.market_risk_off,
-                                     self.mood.blackout(), self.prices)
+                                     self.mood.blackout(), self.prices, meme=self.is_meme(sym),
+                                     spot_only=not has_futures(self.fut, sym))
             if not allowed:
                 memory.log_event(f"🧠 رفض {sym} {STRATEGY_AR[sig.strategy]}: {why}")
                 continue
-            gst = self.gate_status(sig.strategy)
+            meme = self.is_meme(sym)
+            gst = self.gate_status(sig.strategy, meme)
             champ = self.darwin.champion(sig.strategy)
             if conf >= settings.min_confidence and sym not in open_syms and gst != "approved":
-                self._throttled(f"gate_{sig.strategy}", 6 * 3600,
-                                f"🛡️ {STRATEGY_AR[sig.strategy]}: فرصة في {sym} لكن الاستراتيجية لم تُعتمد بعد "
-                                f"({self.gate.get(sig.strategy, {}).get('reason', 'تحت الاختبار')}) — تُسجَّل للتعلم فقط")
+                g_ = (self.gate_meme if meme else self.gate).get(sig.strategy, {})
+                self._throttled(f"gate_{sig.strategy}_{meme}", 6 * 3600,
+                                f"🛡️ {STRATEGY_AR[sig.strategy]}: فرصة في {sym} لكن الاستراتيجية لم تُعتمد بعد"
+                                f"{' للعملات الميمية' if meme else ''} ({g_.get('reason', 'تحت الاختبار')}) — تُسجَّل للتعلم فقط")
                 continue
             if conf >= settings.min_confidence and sym not in open_syms and not accepts(champ, metrics(ctx, sig)):
                 self._throttled(f"dw_{sym}_{sig.strategy}", 3600,
@@ -335,6 +351,12 @@ class Agent:
                 continue
             if sym not in self.pretrained:
                 continue  # لا يتداول عملة قبل دراسة تاريخها
+            if self.is_meme(sym):
+                n_meme = sum(1 for p in self.broker.positions.values() if self.is_meme(p["symbol"]))
+                if n_meme >= settings.meme_max_positions:
+                    continue  # صفقة ميمية واحدة كحد أقصى
+            if sig.side == "short" and not has_futures(self.fut, sym):
+                continue  # لا يوجد عقد Futures مطابق => شراء فقط
             await self.open_position(sym, ctx, sig, conf, feats, why, slots, cn)
 
     async def open_position(self, sym, ctx, sig, conf, feats, why, slots, cn=None):
@@ -348,18 +370,31 @@ class Agent:
         sig.entry, sig.stop, sig.target = price, price - d * dist, price + d * dist * rr0 * genome["rr"]
         atr = float(ctx["df"]["atr"].iloc[-1])
         open_notional = sum(p["notional"] for p in self.broker.positions.values())
-        sz = self.risk.size(self.equity, price, sig.stop, conf, atr / price, open_notional, slots)
+        meme = self.is_meme(sym)
+        spot_only = not has_futures(self.fut, sym)
+        sz = self.risk.size(self.equity, price, sig.stop, conf, atr / price, open_notional, slots, meme=meme)
         if not sz or sz["notional"] < 6:
             return
-        market = "futures" if (sig.side == "short" or sz["leverage"] > 1 or conf >= 0.72) else "spot"
-        market, sz = self._fit_min_notional(sym, market, sig, sz, price)
+        if spot_only:
+            if sig.side == "short":
+                return
+            free = self.equity - sum(p["notional"] / p["leverage"] for p in self.broker.positions.values())
+            cap = min(sz["notional"], free * 0.95)  # Spot بلا رافعة
+            if cap < 6:
+                return
+            k = cap / sz["notional"]
+            sz = dict(sz, qty=sz["qty"] * k, notional=cap, leverage=1, risk_usd=sz["risk_usd"] * k, margin=cap)
+            market = "spot"
+        else:
+            market = "futures" if (sig.side == "short" or sz["leverage"] > 1 or conf >= 0.72) else "spot"
+        market, sz = self._fit_min_notional(sym, market, sig, sz, price, meme)
         if not sz:
             return
         pos = {"symbol": sym, "market": market, "side": sig.side, "qty": sz["qty"], "leverage": sz["leverage"],
                "stop": sig.stop, "init_stop": sig.stop, "target": sig.target, "atr": atr,
                "strategy": sig.strategy, "regime": ctx["regime"]["regime"], "features": feats,
                "reasons": sig.reasons + [why], "risk_usd": sz["risk_usd"], "conf": conf,
-               "genome": genome, "council": cn}
+               "genome": genome, "council": cn, "meme": meme}
         try:
             pos = await self.broker.open(pos, price)
         except Exception as e:
@@ -384,7 +419,7 @@ class Agent:
                     lim = float(f.get("notional") or f.get("minNotional") or 0)
         return float(lim or 5) * 1.05  # هامش أمان 5%
 
-    def _fit_min_notional(self, sym, market, sig, sz, price):
+    def _fit_min_notional(self, sym, market, sig, sz, price, meme=False):
         """
         رأس المال الصغير: بعض العقود تشترط قيمة دنيا كبيرة للصفقة.
         1) يجرب السوق الآخر (Spot) إن كان ممكناً. 2) يرفع الحجم للحد الأدنى فقط إذا بقيت المخاطرة ضمن الحد الأقصى.
@@ -400,7 +435,8 @@ class Agent:
         scale = need / sz["notional"]
         new_risk = sz["risk_usd"] * scale
         free = self.equity - sum(p["notional"] / p["leverage"] for p in self.broker.positions.values())
-        if new_risk <= self.equity * settings.risk_max and need / sz["leverage"] <= free * 0.95:
+        cap = settings.risk_max * (settings.meme_risk_mult if meme else 1.0)
+        if new_risk <= self.equity * cap and need / sz["leverage"] <= free * 0.95:
             sz = dict(sz, qty=sz["qty"] * scale, notional=need, risk_usd=new_risk, margin=need / sz["leverage"],
                       risk_pct=new_risk / self.equity)
             return market, sz
@@ -408,7 +444,7 @@ class Agent:
         if time.time() - self._skip_log.get(key, 0) > 6 * 3600:
             self._skip_log[key] = time.time()
             memory.log_event(f"💡 تجاوز {sym} ({market}): الحد الأدنى للصفقة في Binance {need:.0f}$ "
-                             f"يتطلب مخاطرة {new_risk / max(self.equity, 1e-9):.1%} — أعلى من الحد المسموح {settings.risk_max:.0%}")
+                             f"يتطلب مخاطرة {new_risk / max(self.equity, 1e-9):.1%} — أعلى من الحد المسموح {cap:.0%}")
         return market, None
 
     # ================================================================ إدارة الصفقات
@@ -560,7 +596,10 @@ class Agent:
             st = self.study = {"version": 2, "done": [], "agg": {}, "started": time.time()}
             memory.kv_set("study", st)
             memory.log_event("📚 بدء دراسة سنتين من تاريخ كل عملة + الاختبار على المستقبل المخفي (تعمل في الخلفية)", "learn")
-        todo = [s_ for s_ in self.universe if s_.split("/")[0] not in st["done"]]
+        st.setdefault("meme_done", [])
+        st.setdefault("agg_meme", {})
+        todo = [s_ for s_ in self.universe
+                if s_.split("/")[0] not in (st["meme_done"] if self.is_meme(s_) else st["done"])]
         if not todo:
             self.pretrain_status = "done"
             return
@@ -598,8 +637,13 @@ class Agent:
                 log.exception("study")
                 memory.log_event(f"⚠️ تعذرت دراسة {base}: {e}", "warn")
                 continue
-            study.merge_stats(st["agg"], stats)
-            st["done"].append(base)
+            if self.is_meme(sym):
+                study.merge_stats(st["agg_meme"], stats)
+                st["meme_done"].append(base)
+            else:
+                study.merge_stats(st["agg"], stats)
+            if base not in st["done"]:
+                st["done"].append(base)
             memory.kv_set("study", st)
             self.pretrained.add(sym)
             memory.kv_set("pretrained", sorted(self.pretrained))
@@ -613,6 +657,12 @@ class Agent:
         self.gate = study.compute_gate(st["agg"], self.gate)
         study.apply_recent(self.gate, st["agg"])
         memory.kv_set("gate", self.gate)
+        if st["agg_meme"]:
+            self.gate_meme = study.compute_gate(st["agg_meme"], self.gate_meme)
+            study.apply_recent(self.gate_meme, st["agg_meme"])
+            memory.kv_set("gate_meme", self.gate_meme)
+            okm = [STRATEGY_AR[k] for k, g in self.gate_meme.items() if g["status"] == "approved"]
+            memory.log_event(f"🐸 الاختبار المخفي للعملات الميمية: {'، '.join(okm) or 'لم تنجح أي استراتيجية بعد'}", "learn")
         st["finished"] = time.time()
         memory.kv_set("study", st)
         memory.kv_set("darwin_seeded", True)
@@ -623,7 +673,13 @@ class Agent:
         notify.send("🎓 انتهت دراسة السنتين", f"اجتازت الاختبار المخفي: {'، '.join(ok) or 'لا شيء بعد'}\nالبقية تُختبر حياً.",
                     tags=["mortar_board"])
 
-    def gate_status(self, strategy):
+    def is_meme(self, sym):
+        return sym in self.memes or sym.split("/")[0] in settings.memes
+
+    def gate_status(self, strategy, meme=False):
+        if meme:  # العملات الميمية: اختبار مخفي خاص بها، ولا تُتداول قبل اجتيازه
+            g = self.gate_meme.get(strategy)
+            return g["status"] if g else "testing"
         g = self.gate.get(strategy)
         if g:
             return g["status"]
@@ -632,7 +688,7 @@ class Agent:
     async def dream(self):
         """🌙 حلم الوكيل: إعادة محاكاة آخر 30 يوماً بكل الاستراتيجيات والجينات."""
         memory.log_event("🌙 الوكيل يحلم: إعادة محاكاة آخر 30 يوماً…", "learn")
-        agg, total = {}, 0
+        agg, agg_m, total = {}, {}, 0
         raw1 = {}
         for sym in self.universe:
             try:
@@ -654,13 +710,16 @@ class Agent:
                     study.simulate_symbol, base, r1, r4.iloc[-600:], btc_e,
                     panel[base] if base in panel else None, f, float("inf"), self.darwin, self.learner,
                     start_ts=since, save=False, lw=0.1, dw=0.3, recent_from=since)
-                study.merge_stats(agg, stats, keys=("recent",))
+                study.merge_stats(agg_m if self.is_meme(sym) else agg, stats, keys=("recent",))
                 total += n
             except Exception as e:
                 log.warning(f"dream {sym}: {e}")
             await asyncio.sleep(1)
         changes = study.apply_recent(self.gate, agg)
         memory.kv_set("gate", self.gate)
+        if self.gate_meme:
+            study.apply_recent(self.gate_meme, agg_m)
+            memory.kv_set("gate_meme", self.gate_meme)
         memory.kv_set("last_dream", {"ts": time.time(), "signals": total})
         for s_, stt in changes:
             msg = (f"⛔ تعليق مؤقت لـ«{STRATEGY_AR[s_]}»: تخسر في السوق الحالي" if stt == "suspended"
@@ -744,6 +803,7 @@ class Agent:
             upnl = (px - p["entry"]) * p["qty"] * d
             positions.append({k: p[k] for k in ("id", "symbol", "market", "side", "qty", "entry", "stop", "target",
                                                 "leverage", "strategy", "opened", "reasons", "risk_usd")}
+                             | {"meme": self.is_meme(p["symbol"])}
                              | {"price": px, "upnl": upnl, "r": upnl / p["risk_usd"] if p.get("risk_usd") else 0,
                                 "strategy_ar": STRATEGY_AR[p["strategy"]]})
         return {
@@ -773,6 +833,11 @@ class Agent:
             "gate": {k: {"status": self.gate_status(k), **{x: y for x, y in self.gate.get(k, {}).items() if x != "ts"}}
                      for k in STRATEGIES},
             "strategy_names": STRATEGY_AR,
+            "gate_meme": {k: {"status": self.gate_status(k, True), **{x: y for x, y in self.gate_meme.get(k, {}).items() if x != "ts"}}
+                          for k in STRATEGIES},
+            "memes": {"coins": sorted(m.split("/")[0] for m in self.memes), "risk_mult": settings.meme_risk_mult,
+                      "max_lev": settings.meme_max_leverage, "max_pos": settings.meme_max_positions,
+                      "studied": len(self.study.get("meme_done", []))},
             "study": {**self.study_progress, "status": self.pretrain_status,
                       "done": len(self.study.get("done", [])), "total": len(self.universe),
                       "finished": self.study.get("finished"), "years": round(settings.pretrain_bars / 8760, 1)},

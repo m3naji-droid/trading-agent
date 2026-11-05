@@ -106,7 +106,8 @@ async def build_universe(spot, fut, size, min_vol) -> tuple:
         if not m or m.get("quote") != "USDT" or not m.get("active") or not m.get("spot"):
             continue
         base = m["base"]
-        if base in STABLES or base.endswith(("UP", "DOWN", "BULL", "BEAR")) or base not in fut_bases:
+        if base in STABLES or base.endswith(("UP", "DOWN", "BULL", "BEAR")) or base not in fut_bases \
+                or base in settings.memes:  # الميمية لها خانة خاصة بقواعد أشد
             continue
         qv = t.get("quoteVolume") or 0
         if qv >= min_vol:
@@ -129,6 +130,29 @@ async def build_universe(spot, fut, size, min_vol) -> tuple:
 
     by_vol = sorted(eligible.values(), key=lambda x: -x[1])[:size]
     return [s for s, _ in by_vol], {}, "السيولة"
+
+
+async def build_memes(spot, fut, size, min_vol) -> list:
+    """
+    خانة العملات الميمية: الأعلى سيولة على Binance Spot من القائمة.
+    كثير منها في Futures برمز مختلف (1000PEPE مثلاً)، لذلك تُتداول Spot (شراء فقط)
+    إلا إذا وُجد عقد Futures بنفس الرمز تماماً.
+    """
+    tickers = await spot.fetch_tickers()
+    out = []
+    for base in settings.memes:
+        sym = f"{base}/USDT"
+        m = spot.markets.get(sym)
+        t = tickers.get(sym) or {}
+        if m and m.get("active") and (t.get("quoteVolume") or 0) >= min_vol:
+            out.append((t.get("quoteVolume") or 0, sym))
+    out.sort(reverse=True)
+    return [s for _, s in out[:size]]
+
+
+def has_futures(fut, sym: str) -> bool:
+    m = (getattr(fut, "markets", None) or {}).get(fut_symbol(sym))
+    return bool(m and m.get("active", True))
 
 
 def fut_symbol(sym: str) -> str:
