@@ -84,6 +84,9 @@ header{padding-top:max(12px,env(safe-area-inset-top))}
 .vote .v{font-size:16px;width:22px;text-align:center}
 .gene{display:inline-block;background:var(--bg);border-radius:8px;padding:5px 8px;margin:3px 0 3px 4px;font-size:11.5px}
 #gch{height:200px}
+.rfb{background:var(--line);border-radius:99px;width:30px;height:24px;padding:0;font-size:13px;line-height:24px}
+.rfb.spin{animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
+#upd{display:none;position:fixed;left:16px;right:16px;bottom:calc(76px + env(safe-area-inset-bottom));z-index:15;background:var(--acc);color:#04121f;border-radius:12px;padding:12px 14px;font-weight:700;text-align:center;box-shadow:0 6px 24px rgba(0,0,0,.4)}
 .seg{display:flex;gap:6px}.seg button{flex:1;padding:9px;font-size:13px}.seg button.act{background:var(--acc);color:#04121f}
 </style>
 </head>
@@ -91,7 +94,7 @@ header{padding-top:max(12px,env(safe-area-inset-top))}
 <div id="login"><div class="card"><h2>🤖 وكيل التداول الذكي</h2><p class="mut" style="font-size:13px">أدخل كلمة مرور لوحة التحكم</p>
 <input id="pw" type="password" placeholder="كلمة المرور" onkeydown="if(event.key==='Enter')doLogin()"><button class="pri" style="width:100%" onclick="doLogin()">دخول</button><p id="lerr" class="dn" style="margin-top:8px"></p></div></div>
 
-<header><h1>🤖 الوكيل الذكي</h1><div style="display:flex;gap:6px"><span id="ver" class="pill num">—</span><span id="mode" class="pill">—</span><span id="run" class="pill">—</span></div></header>
+<header><h1>🤖 الوكيل الذكي</h1><div style="display:flex;gap:6px;align-items:center"><button id="rfb" class="rfb" onclick="hardRefresh()" aria-label="تحديث الصفحة">🔄</button><span id="ver" class="pill num">—</span><span id="mode" class="pill">—</span><span id="run" class="pill">—</span></div></header>
 
 <main>
 <div id="frozen" class="banner"></div>
@@ -178,6 +181,7 @@ header{padding-top:max(12px,env(safe-area-inset-top))}
   <a href="#" data-t="log"><span>📜</span>السجل</a>
 </nav>
 
+<div id="upd" class="click" onclick="hardRefresh()">✨ وصل إصدار جديد — اضغط للتحديث</div>
 <div id="modal" onclick="if(event.target===this)closeTrade()"><div class="sheet">
   <div style="display:flex;justify-content:space-between;align-items:center"><b id="mt" style="font-size:16px"></b><button onclick="closeTrade()" style="padding:6px 12px">✕</button></div>
   <div id="mchart"></div>
@@ -232,7 +236,9 @@ async function loadChart(){const s=$('sym').value;if(!s||!cs)return;try{const d=
  d.trades.forEach(t=>{lines.push(cs.createPriceLine({price:t.entry,color:'#4da3ff',lineWidth:2,title:'دخول'}));lines.push(cs.createPriceLine({price:t.stop,color:'#f05a5a',lineWidth:1,title:'وقف'}));lines.push(cs.createPriceLine({price:t.target,color:'#21c08b',lineWidth:1,title:'هدف'}))});
  chart.timeScale().fitContent()}catch(e){}}
 
-function render(s){S=s;try{renderPerf(s)}catch(e){console.log(e)}
+let LOADED_VER=null;
+function hardRefresh(){$('rfb').classList.add('spin');setTimeout(()=>location.reload(),250)}
+function render(s){S=s;if(s.version){if(LOADED_VER===null)LOADED_VER=s.version;else if(s.version!==LOADED_VER)$('upd').style.display='block'}try{renderPerf(s)}catch(e){console.log(e)}
  for(const[f,a]of[[renderMood,s.mood],[renderDarwin,s.darwin],[renderCouncil,s.council_stats]])try{f(a)}catch(e){console.log(e)}
  try{renderGhosts(s)}catch(e){console.log(e)}$('ver').textContent=s.version||'—';
  $('mode').textContent=s.mode.toUpperCase();$('mode').className='pill '+(s.mode==='live'?'w':'on');
