@@ -48,6 +48,7 @@ class LiquidationTracker:
         self.window = window_sec
         self.events = defaultdict(deque)  # symbol -> (ts, side, price, usd)
         self.connected = False
+        self.on_event = None  # رادار الحيتان
 
     async def run(self):
         try:
@@ -67,6 +68,8 @@ class LiquidationTracker:
                         # side=SELL تعني تصفية مركز شراء (long)
                         side = "long" if d.get("S") == "SELL" else "short"
                         self.events[sym].append((time.time(), side, price, usd))
+                        if self.on_event and sym.endswith("USDT"):
+                            self.on_event(sym[:-4], side, price, usd)
                         self._trim(sym)
             except Exception as e:  # إعادة اتصال تلقائية
                 self.connected = False

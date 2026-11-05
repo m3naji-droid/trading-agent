@@ -15,7 +15,12 @@ from . import notify, performance
 from .indicators import enrich
 from .regime import detect_regime, HIGH_RISK, TREND_UP, TREND_DOWN, LABELS_AR
 from . import smc as smc_mod
-from .strategies import run_all, apply_orderflow, features, STRATEGY_AR
+from .strategies import run_all, apply_orderflow, features, STRATEGY_AR, STRATEGIES
+from .mood import Mood
+from .council import deliberate
+from .darwin import Darwin, GENE_AR
+from .ghosts import Ghosts
+from .radar import WhaleRadar
 from .orderflow import LiquidationTracker, snapshot
 from .learner import Learner, pretrain, simulate_trade
 from .risk import RiskManager
@@ -53,6 +58,12 @@ class Agent:
         self.risk = RiskManager()
         self.learner = Learner()
         self.liq = LiquidationTracker()
+        self.mood = Mood()
+        self.darwin = Darwin(list(STRATEGIES))
+        self.ghosts = Ghosts()
+        self.radar = WhaleRadar()
+        self.liq.on_event = self.radar.add_liquidation
+        self._blackout_key = None
         self.universe, self.analysis, self.prices = [], {}, {}
         self.rank_info = {}
         self.restart_requested = False
@@ -85,6 +96,8 @@ class Agent:
             self.broker = LiveBroker(self.spot, self.fut, self.mode)
         memory.log_event(f"🚀 بدأ الوكيل في وضع {self.mode.upper()}")
         asyncio.create_task(self.liq.run())
+        asyncio.create_task(self.radar.run())
+        asyncio.create_task(self.mood_loop())
         asyncio.create_task(self.loop())
 
     async def loop(self):
@@ -126,6 +139,7 @@ class Agent:
             memory.log_event(f"🔭 أفضل {len(uni)} عملة حسب {source}: {names}")
             if added and len(added) < len(uni):
                 memory.log_event(f"➕ عملات جديدة دخلت القائمة: {'، '.join(s.split('/')[0] for s in added)}")
+            self.radar.set_symbols(uni)
             if self.pretrain_status != "running":
                 asyncio.create_task(self.pretrain_all())
 
@@ -166,8 +180,28 @@ class Agent:
                 notify.send("🛑 السوق في حالة خطر", "البيتكوين في تذبذب شديد. الوكيل أوقف الدخول في صفقات جديدة لحماية المحفظة.",
                             priority=4, tags=["rotating_light"], throttle_key="risk_off", throttle_sec=6 * 3600)
 
+        bo = self.mood.blackout()
+        bkey = f"{bo['title']}|{bo['ts']}" if bo else None
+        if bkey != self._blackout_key:
+            self._blackout_key = bkey
+            if bo:
+                when = datetime.fromtimestamp(bo["ts"], timezone.utc).strftime("%H:%M UTC")
+                memory.log_event(f"📅 حدث اقتصادي مهم ({bo['title']} — {when}): إيقاف الدخول مؤقتاً حتى ساعة بعده", "warn")
+                notify.send("📅 إيقاف مؤقت قبل حدث اقتصادي", f"{bo['title']} الساعة {when}\nلا صفقات جديدة من نصف ساعة قبله حتى ساعة بعده.",
+                            tags=["calendar"])
+            else:
+                memory.log_event("📅 انتهت فترة الحدث الاقتصادي — استئناف الدخول")
+
         await self.manage_positions()
         await self.decide([c for r in results for c in r])
+        self.ghosts.tick(self.prices, self.prices.get("BTC/USDT"))
+        for ev in self.darwin.pop_events():
+            ch = "، ".join(f"{GENE_AR[k]} {ev['old'][k]}→{ev['new'][k]}" for k in ev["new"] if ev["new"][k] != ev["old"][k])
+            memory.log_event(f"🧬 داروين: ترقية جيل {ev['generation']} لـ«{STRATEGY_AR[ev['strategy']]}» "
+                             f"({ev['old_r']:+.2f}R → {ev['new_r']:+.2f}R): {ch}", "learn")
+            notify.send(f"🧬 تطوّر استراتيجية: {STRATEGY_AR[ev['strategy']]}",
+                        f"الجيل {ev['generation']}: متوسط {ev['old_r']:+.2f}R ← {ev['new_r']:+.2f}R\n{ch}", tags=["dna"])
+        self.darwin.save()
         memory.kv_set("shadow", self.shadow)
 
     # ================================================================ التحليل
@@ -210,20 +244,35 @@ class Agent:
             reg = ctx["regime"]["regime"]
             conf = self.learner.blended_confidence(sig, reg)
             feats = features(ctx, sig)
-            allowed, why = memory.check_pattern(sig.strategy, sig.side, feats)
-            self._open_shadow(sym, ctx, sig, feats)
+            allowed, why, pstats = memory.check_pattern(sig.strategy, sig.side, feats)
+            cn = deliberate(sig, ctx, conf, self.risk, pstats, self.mood, sym.split("/")[0])
+            self._open_shadow(sym, ctx, sig, feats, cn)
             self.analysis[sym]["last_decision"] = {"strategy": STRATEGY_AR[sig.strategy], "side": sig.side,
-                                                   "conf": round(conf, 2), "memory": why, "allowed": allowed}
+                                                   "conf": round(conf, 2), "memory": why, "allowed": allowed,
+                                                   "council": cn["yes"], "votes": [v["icon"] + ("✓" if v["vote"] else "✗") for v in cn["votes"]]}
+            if sym in self.pretrained and allowed:
+                self.ghosts.consider(sym, sig, conf, cn["yes"], price, float(ctx["df"]["atr"].iloc[-1]),
+                                     self.darwin.champion(sig.strategy), self.market_risk_off,
+                                     self.mood.blackout(), self.prices)
             if not allowed:
                 memory.log_event(f"🧠 رفض {sym} {STRATEGY_AR[sig.strategy]}: {why}")
                 continue
             if conf >= settings.min_confidence and sym not in open_syms:
-                scored.append((conf * min(sig.rr, 3), conf, sym, ctx, sig, feats, why))
+                if not cn["approved"]:
+                    no = [v for v in cn["votes"] if not v["vote"]]
+                    key = f"council_{sym}_{sig.strategy}"
+                    if time.time() - self._skip_log.get(key, 0) > 3600:
+                        self._skip_log[key] = time.time()
+                        memory.log_event(f"🏛️ المجلس رفض {sym} ({STRATEGY_AR[sig.strategy]}) {cn['yes']}/3 — "
+                                         + " | ".join(f"{v['icon']} {v['name']}: {v['reason']}" for v in no))
+                    continue
+                scored.append((conf * min(sig.rr, 3), conf, sym, ctx, sig, feats, why, cn))
 
-        if not self.running or self.risk.frozen or self.market_risk_off or self.pretrain_status == "pending":
+        if (not self.running or self.risk.frozen or self.market_risk_off or self.pretrain_status == "pending"
+                or self.mood.blackout()):
             return
         scored.sort(key=lambda x: -x[0])
-        for _, conf, sym, ctx, sig, feats, why in scored:
+        for _, conf, sym, ctx, sig, feats, why, cn in scored:
             slots = settings.max_open_positions - len(self.broker.positions)
             if slots <= 0:
                 break
@@ -231,13 +280,17 @@ class Agent:
                 continue
             if sym not in self.pretrained:
                 continue  # لا يتداول عملة قبل دراسة تاريخها
-            await self.open_position(sym, ctx, sig, conf, feats, why, slots)
+            await self.open_position(sym, ctx, sig, conf, feats, why, slots, cn)
 
-    async def open_position(self, sym, ctx, sig, conf, feats, why, slots):
+    async def open_position(self, sym, ctx, sig, conf, feats, why, slots, cn=None):
         price = self.prices.get(sym, sig.entry)
-        # إعادة حساب الوقف والهدف على السعر الحالي بنفس المسافات
-        shift = price - sig.entry
-        sig.entry, sig.stop, sig.target = price, sig.stop + shift, sig.target + shift
+        # إعادة حساب الوقف والهدف على السعر الحالي بنفس المسافات، ثم تطبيق جينات داروين للبطل
+        genome = self.darwin.champion(sig.strategy)
+        risk0 = abs(sig.entry - sig.stop)
+        rr0 = abs(sig.target - sig.entry) / risk0 if risk0 else 0
+        d = 1 if sig.side == "long" else -1
+        dist = risk0 * genome["stop"]
+        sig.entry, sig.stop, sig.target = price, price - d * dist, price + d * dist * rr0 * genome["rr"]
         atr = float(ctx["df"]["atr"].iloc[-1])
         open_notional = sum(p["notional"] for p in self.broker.positions.values())
         sz = self.risk.size(self.equity, price, sig.stop, conf, atr / price, open_notional, slots)
@@ -250,7 +303,8 @@ class Agent:
         pos = {"symbol": sym, "market": market, "side": sig.side, "qty": sz["qty"], "leverage": sz["leverage"],
                "stop": sig.stop, "init_stop": sig.stop, "target": sig.target, "atr": atr,
                "strategy": sig.strategy, "regime": ctx["regime"]["regime"], "features": feats,
-               "reasons": sig.reasons + [why], "risk_usd": sz["risk_usd"], "conf": conf}
+               "reasons": sig.reasons + [why], "risk_usd": sz["risk_usd"], "conf": conf,
+               "genome": genome, "council": cn}
         try:
             pos = await self.broker.open(pos, price)
         except Exception as e:
@@ -323,8 +377,9 @@ class Agent:
             atr = pos["atr"]
             pos["best"] = max(pos["best"], p) if long else min(pos["best"], p)
             gain = (pos["best"] - pos["entry"]) if long else (pos["entry"] - pos["best"])
-            if gain >= risk:  # وقف متحرك بعد +1R
-                trail = 1.0 * atr if gain >= 2 * risk else 1.5 * atr
+            g = pos.get("genome") or {"trail": 1.5, "be": 1.0}
+            if gain >= g["be"] * risk:  # وقف متحرك وفق جينات داروين
+                trail = g["trail"] * atr * (0.67 if gain >= 2 * risk else 1.0)
                 ns = max(pos["entry"], pos["best"] - trail) if long else min(pos["entry"], pos["best"] + trail)
                 better = ns > pos["stop"] + 0.1 * atr if long else ns < pos["stop"] - 0.1 * atr
                 if better:
@@ -389,7 +444,7 @@ class Agent:
         notify.send(f"📰 {title}", text, tags=["newspaper"])
 
     # ================================================================ التجريب الموازي (ظل)
-    def _open_shadow(self, sym, ctx, sig, feats):
+    def _open_shadow(self, sym, ctx, sig, feats, council=None):
         key = f"{sym}|{sig.strategy}"
         if any(v["key"] == key for v in self.shadow.values()):
             return
@@ -397,7 +452,8 @@ class Agent:
         self.shadow[sid] = {"key": key, "symbol": sym, "strategy": sig.strategy, "side": sig.side,
                             "entry": sig.entry, "stop": sig.stop, "target": sig.target,
                             "atr": float(ctx["df"]["atr"].iloc[-1]), "ts": int(ctx["df"]["ts"].iloc[-1]),
-                            "regime": ctx["regime"]["regime"], "features": feats, "reasons": sig.reasons}
+                            "regime": ctx["regime"]["regime"], "features": feats, "reasons": sig.reasons,
+                            "council": council}
 
     def _resolve_shadows(self, sym, df):
         for sid, s in list(self.shadow.items()):
@@ -406,9 +462,13 @@ class Agent:
             fut = df[df["ts"] > s["ts"]]
             if fut.empty:
                 continue
-            r, why, px, bars = simulate_trade(SimpleNamespace(**s), fut, s["atr"])
+            sg = SimpleNamespace(**s)
+            champ = self.darwin.champion(s["strategy"])
+            r, why, px, bars = simulate_trade(sg, fut, s["atr"], genome=champ)
             if why == "timeout" and bars < 48:
                 continue
+            self.darwin.record(s["strategy"], {gid: simulate_trade(sg, fut, s["atr"], genome=g)[0]
+                                               for gid, g in self.darwin.genomes(s["strategy"])})
             self.learner.update(s["strategy"], s["regime"], r, weight=0.7)
             memory.save_trade({**s, "market": "shadow", "qty": 0, "leverage": 1, "exit": px, "pnl": 0,
                                "r_mult": r, "exit_reason": why, "opened": s["ts"] / 1000,
@@ -424,7 +484,7 @@ class Agent:
             try:
                 h1 = await ohlcv_df(self.spot, sym, "1h", settings.pretrain_bars)
                 h4 = await ohlcv_df(self.spot, sym, "4h", 500)
-                n = await asyncio.to_thread(pretrain, self.learner, sym, h1, h4)
+                n = await asyncio.to_thread(pretrain, self.learner, sym, h1, h4, 1, self.darwin)
                 self.pretrained.add(sym)
                 memory.kv_set("pretrained", sorted(self.pretrained))
                 memory.log_event(f"📚 درس تاريخ {sym}: {n} صفقة افتراضية سابقة", "learn")
@@ -433,6 +493,33 @@ class Agent:
             await asyncio.sleep(1)
         self.pretrain_status = "done"
         memory.log_event("🎓 انتهت دراسة التاريخ — الوكيل جاهز للتداول", "learn")
+        if not memory.kv_get("darwin_seeded"):
+            await self.seed_darwin()
+
+    async def seed_darwin(self):
+        """مرة واحدة: يختبر جينات داروين على تاريخ العملات المدروسة سابقاً (قبل وجود داروين)."""
+        memory.log_event("🧬 داروين يبدأ اختبار الجينات على تاريخ العملات…", "learn")
+        total = 0
+        for sym in list(self.universe):
+            try:
+                h1 = await ohlcv_df(self.spot, sym, "1h", settings.pretrain_bars)
+                h4 = await ohlcv_df(self.spot, sym, "4h", 500)
+                total += await asyncio.to_thread(pretrain, self.learner, sym, h1, h4, 1, self.darwin, False)
+            except Exception as e:
+                log.warning(f"darwin seed {sym}: {e}")
+            await asyncio.sleep(2)
+        memory.kv_set("darwin_seeded", True)
+        memory.log_event(f"🧬 داروين أنهى اختبار {total} إشارة تاريخية", "learn")
+
+    # ================================================================ مزاج السوق
+    async def mood_loop(self):
+        while True:
+            try:
+                bases = [s.split("/")[0] for s in self.universe] or ["BTC", "ETH"]
+                await asyncio.to_thread(self.mood.refresh, bases)
+            except Exception as e:
+                log.warning(f"mood: {e}")
+            await asyncio.sleep(120)
 
     # ================================================================ للواجهة
     def state(self):
@@ -464,6 +551,11 @@ class Agent:
             "stats": memory.stats(0), "shadow_stats": memory.stats(1),
             "shadow_open": len(self.shadow),
             "memory": memory_usage(),
+            "mood": self.mood.summary(),
+            "darwin": self.darwin.summary(),
+            "ghosts": self.ghosts.summary(self.prices),
+            "council_stats": memory.council_stats(self.mode),
+            "radar_on": self.radar.connected,
         }
 
     async def candles(self, sym, tf="15m"):

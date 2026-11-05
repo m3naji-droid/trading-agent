@@ -19,6 +19,7 @@ class RiskManager:
         self.frozen_reason = st.get("frozen_reason", "")
         self.manual_freeze = st.get("manual_freeze", False)
         self.peak_equity = st.get("peak_equity", 0.0)
+        self.daily_dd_now = 0.0
 
     def save(self):
         memory.kv_set("risk", self.__dict__)
@@ -77,6 +78,7 @@ class RiskManager:
                 memory.log_event("☀️ يوم جديد: رفع التجميد التلقائي واستئناف التداول")
         self.peak_equity = max(self.peak_equity, equity)
         dd = 1 - equity / self.day_start_equity if self.day_start_equity else 0
+        self.daily_dd_now = dd
         self.save()
         if not self.frozen and dd >= settings.max_daily_drawdown:
             return f"التراجع اليومي {dd:.1%} تجاوز الحد {settings.max_daily_drawdown:.0%}"

@@ -44,6 +44,10 @@ def init():
                 c.execute(f"ALTER TABLE equity ADD COLUMN {col}")
             except sqlite3.OperationalError:
                 pass
+        try:
+            c.execute("ALTER TABLE trades ADD COLUMN council TEXT")
+        except sqlite3.OperationalError:
+            pass
 
 
 # ------------------------------------------------------------------ أدوات عامة
@@ -105,10 +109,11 @@ def equity_curve(since_sec=30 * 86400, mode=None):
 def save_trade(t: dict) -> int:
     cols = ["symbol", "market", "strategy", "side", "regime", "features", "reasons", "entry", "stop",
             "target", "qty", "leverage", "exit", "pnl", "r_mult", "exit_reason", "opened", "closed",
-            "mode", "shadow"]
+            "mode", "shadow", "council"]
     row = {k: t.get(k) for k in cols}
     row["features"] = json.dumps(row["features"] or [])
     row["reasons"] = json.dumps(row["reasons"] or [], ensure_ascii=False)
+    row["council"] = json.dumps(row["council"], ensure_ascii=False) if row["council"] else None
     with _lock, _conn() as c:
         cur = c.execute(f"INSERT INTO trades({','.join(cols)}) VALUES({','.join('?' * len(cols))})",
                         [row[k] for k in cols])
@@ -123,6 +128,7 @@ def recent_trades(limit=50, shadow=0):
     for r in rows:
         d = dict(r)
         d["reasons"] = json.loads(d["reasons"] or "[]")
+        d["council"] = json.loads(d["council"]) if d.get("council") else None
         d.pop("features", None)
         out.append(d)
     return out
@@ -138,12 +144,12 @@ def _cos(a, b):
 
 def check_pattern(strategy, side, feats, k=12):
     """
-    يرجع (مسموح؟, شرح). يرفض إذا كانت أقرب الصفقات المشابهة جداً خاسرة في الغالب.
+    يرجع (مسموح؟, شرح, إحصاءات). يرفض إذا كانت أقرب الصفقات المشابهة جداً خاسرة في الغالب.
     يشمل الصفقات الحقيقية والظلّية (التجريبية الموازية) والتدريب التاريخي.
     """
     with _conn() as c:
         rows = c.execute(
-            "SELECT features, r_mult, exit_reason FROM trades WHERE strategy=? AND side=? AND closed IS NOT NULL "
+            "SELECT features, r_mult FROM trades WHERE strategy=? AND side=? AND closed IS NOT NULL "
             "ORDER BY closed DESC LIMIT 3000", (strategy, side)).fetchall()
     sims = []
     for r in rows:
@@ -155,13 +161,36 @@ def check_pattern(strategy, side, feats, k=12):
     sims.sort(reverse=True)
     near = sims[:k]
     if len(near) < 4:
-        return True, f"نمط جديد ({len(near)} حالة مشابهة)"
+        return True, f"نمط جديد ({len(near)} حالة مشابهة)", {"n": len(near), "winrate": 0.5, "avg_r": 0.0}
     losses = sum(1 for _, r in near if r <= 0)
     avg_r = sum(r for _, r in near) / len(near)
-    rate = losses / len(near)
-    if rate >= 0.7 and avg_r < 0:
-        return False, f"نمط خاسر سابقاً: {losses}/{len(near)} خسارة، متوسط {avg_r:+.2f}R"
-    return True, f"نمط معروف: {len(near) - losses}/{len(near)} ربح، متوسط {avg_r:+.2f}R"
+    st = {"n": len(near), "winrate": 1 - losses / len(near), "avg_r": avg_r}
+    if losses / len(near) >= 0.7 and avg_r < 0:
+        return False, f"نمط خاسر سابقاً: {losses}/{len(near)} خسارة، متوسط {avg_r:+.2f}R", st
+    return True, f"نمط معروف: {len(near) - losses}/{len(near)} ربح، متوسط {avg_r:+.2f}R", st
+
+
+def council_stats(mode, days=30):
+    """هل المجلس محق؟ مقارنة نتائج الفرص التي وافق عليها بالتي رفضها (من الصفقات الظلّية)."""
+    with _conn() as c:
+        rows = c.execute("SELECT council, r_mult FROM trades WHERE shadow=1 AND market='shadow' AND mode=? "
+                         "AND council IS NOT NULL AND closed>?", (mode, time.time() - days * 86400)).fetchall()
+    out = {"approved": {"n": 0, "r": 0.0, "wins": 0}, "rejected": {"n": 0, "r": 0.0, "wins": 0},
+           "members": {}}
+    for row in rows:
+        cn = json.loads(row["council"])
+        r = row["r_mult"] or 0
+        b = out["approved" if cn.get("approved") else "rejected"]
+        b["n"] += 1; b["r"] += r; b["wins"] += 1 if r > 0 else 0
+        for v in cn.get("votes", []):
+            m = out["members"].setdefault(v["key"], {"right": 0, "n": 0})
+            m["n"] += 1
+            m["right"] += 1 if (v["vote"] and r > 0) or (not v["vote"] and r <= 0) else 0
+    for k in ("approved", "rejected"):
+        b = out[k]
+        b["avg_r"] = b["r"] / b["n"] if b["n"] else 0.0
+        b["winrate"] = b["wins"] / b["n"] if b["n"] else 0.0
+    return out
 
 
 def stats(shadow=0):
@@ -193,6 +222,7 @@ def get_trade(tid):
         return None
     d = dict(r)
     d["reasons"] = json.loads(d["reasons"] or "[]")
+    d["council"] = json.loads(d["council"]) if d.get("council") else None
     d.pop("features", None)
     return d
 

@@ -132,6 +132,7 @@ async def state(req: Request):
     s["lessons"] = memory.lessons(8)
     s["equity_curve"] = memory.equity_curve(mode=agent.mode)
     s["perf"] = performance.summary(agent.mode)
+    s["ghost_curves"] = {k: memory.equity_curve(mode=f"ghost:{k}") for k in ("conservative", "balanced", "aggressive")}
     s["reports"] = memory.kv_get("reports", [])[:7]
     s["notify"] = {"on": notify.enabled(), "topic": notify.topic(), "server": notify.SERVER}
     s["version"] = VERSION_NAME
@@ -170,7 +171,10 @@ def explain(t: dict, closed: bool) -> list:
         else:
             out.append("🧠 التعلم: حُفظت ظروف هذه الصفقة؛ إذا تكرر نمط مشابه وخسر غالباً سيرفضه الوكيل مستقبلاً.")
     else:
-        out.append("الصفقة مفتوحة، والوكيل يديرها بوقف متحرك بعد تحقيق ربح يساوي المخاطرة.")
+        out.append("الصفقة مفتوحة، والوكيل يديرها بوقف متحرك وفق جينات داروين الحالية.")
+    g = t.get("genome")
+    if g:
+        out.append(f"🧬 جينات الإدارة: وقف ×{g['stop']} · هدف ×{g['rr']} · تتبع {g['trail']}×ATR يبدأ عند +{g['be']}R.")
     return out
 
 
@@ -199,8 +203,14 @@ async def trade_detail(req: Request, tid: str):
         rows = await agent.spot.fetch_ohlcv(t["symbol"], tf, since=since, limit=limit)
     except Exception:
         rows = []
-    return {"trade": t, "closed": closed, "tf": tf, "explain": explain(t, closed),
+    return {"trade": t, "closed": closed, "tf": tf, "explain": explain(t, closed), "council": t.get("council"),
             "candles": [{"time": r[0] / 1000, "open": r[1], "high": r[2], "low": r[3], "close": r[4]} for r in rows]}
+
+
+@app.get("/api/radar")
+async def radar(req: Request, window: int = 1800):
+    auth(req)
+    return agent.radar.snapshot(max(300, min(window, 3600)))
 
 
 @app.post("/api/notify")

@@ -80,57 +80,77 @@ class Learner:
 
 
 # ------------------------------------------------------------------ محاكاة صفقة
-def simulate_trade(sig, future: pd.DataFrame, atr: float, max_bars=48, fee=None):
+DEFAULT_GENOME = {"stop": 1.0, "rr": 1.0, "trail": 1.5, "be": 1.0}
+
+
+def simulate_trade(sig, future: pd.DataFrame, atr: float, max_bars=48, fee=None, genome=None):
     """
-    يحاكي صفقة على الشموع اللاحقة مع وقف خسارة متحرك:
-    عند +1R ينتقل الوقف للتعادل، ثم يتبع السعر بمسافة 1.5×ATR.
+    يحاكي صفقة على الشموع اللاحقة وفق "جينات" الإدارة (داروين):
+    مسافة الوقف × stop، الهدف × rr، يبدأ التتبع عند be×R بمسافة trail×ATR (تضيق بعد +2R).
     يرجع (R-multiple صافي, سبب الخروج, سعر الخروج, عدد الشموع).
     """
+    g = genome or DEFAULT_GENOME
     fee = settings.fee_rate if fee is None else fee
-    risk = abs(sig.entry - sig.stop)
-    if risk <= 0 or future.empty:
-        return 0.0, "none", sig.entry, 0
-    stop, long = sig.stop, sig.side == "long"
-    best = sig.entry
-    for i, (_, b) in enumerate(future.iloc[:max_bars].iterrows()):
+    e = sig.entry
+    risk0 = abs(e - sig.stop)
+    if risk0 <= 0 or len(future) == 0:
+        return 0.0, "none", e, 0
+    rr0 = abs(sig.target - e) / risk0
+    risk = risk0 * g["stop"]
+    long = sig.side == "long"
+    d = 1 if long else -1
+    stop0 = e - d * risk
+    stop = stop0
+    target = e + d * risk * rr0 * g["rr"]
+    H = future["high"].values[:max_bars]
+    L = future["low"].values[:max_bars]
+    C = future["close"].values[:max_bars]
+    best = e
+    why = None
+    for i in range(len(H)):
+        h, l = H[i], L[i]
         if long:
-            if b["low"] <= stop:
+            if l <= stop:
                 px, why = stop, "stop"
                 break
-            if b["high"] >= sig.target:
-                px, why = sig.target, "target"
+            if h >= target:
+                px, why = target, "target"
                 break
-            best = max(best, b["high"])
-            if best - sig.entry >= risk:
-                stop = max(stop, sig.entry, best - 1.5 * atr)
+            best = max(best, h)
+            gain = best - e
         else:
-            if b["high"] >= stop:
+            if h >= stop:
                 px, why = stop, "stop"
                 break
-            if b["low"] <= sig.target:
-                px, why = sig.target, "target"
+            if l <= target:
+                px, why = target, "target"
                 break
-            best = min(best, b["low"])
-            if sig.entry - best >= risk:
-                stop = min(stop, sig.entry, best + 1.5 * atr)
-    else:
-        px, why = future["close"].iloc[min(max_bars, len(future)) - 1], "timeout"
-        i = min(max_bars, len(future)) - 1
-    gross = (px - sig.entry) if long else (sig.entry - px)
-    fees = 2 * fee * sig.entry
-    if why == "stop" and abs(stop - sig.stop) > 1e-12:
+            best = min(best, l)
+            gain = e - best
+        if gain >= g["be"] * risk:
+            trail = g["trail"] * atr * (0.67 if gain >= 2 * risk else 1.0)
+            if long:
+                stop = max(stop, e, best - trail)
+            else:
+                stop = min(stop, e, best + trail)
+    if why is None:
+        i = len(H) - 1
+        px, why = C[i], "timeout"
+    gross = d * (px - e)
+    if why == "stop" and abs(stop - stop0) > 1e-12:
         why = "trailing"
-    return (gross - fees) / risk, why, float(px), i + 1
+    return float((gross - 2 * fee * e) / risk), why, float(px), i + 1
 
 
 def build_ctx(df: pd.DataFrame, htf: pd.DataFrame, flow=None):
     return {"df": df, "htf": htf, "regime": detect_regime(df), "smc": smc_mod.analyze(df), "flow": flow}
 
 
-def pretrain(learner: Learner, symbol: str, h1: pd.DataFrame, h4: pd.DataFrame, step=1):
+def pretrain(learner: Learner, symbol: str, h1: pd.DataFrame, h4: pd.DataFrame, step=1, darwin=None, learn=True):
     """
-    دراسة تاريخ العملة: يمرّ على الشموع التاريخية كأنه يتداول لحظياً،
-    ويسجّل نتيجة كل إشارة في الذاكرة ويحدّث المتعلّم.
+    دراسة تاريخ العملة: يمرّ على الشموع التاريخية كأنه يتداول لحظياً.
+    learn=True : يسجّل النتائج في الذاكرة ويحدّث المتعلّم.
+    darwin     : يختبر كل جينات داروين على نفس الإشارات التاريخية.
     """
     df = enrich(h1).dropna().reset_index(drop=True)
     hdf = enrich(h4).dropna().reset_index(drop=True)
@@ -150,7 +170,16 @@ def pretrain(learner: Learner, symbol: str, h1: pd.DataFrame, h4: pd.DataFrame, 
             if i <= cooldown[sig.strategy]:
                 continue
             cooldown[sig.strategy] = i + 6
-            r, why, px, bars = simulate_trade(sig, df.iloc[i + 1:], float(win["atr"].iloc[-1]))
+            fut = df.iloc[i + 1:]
+            atr = float(win["atr"].iloc[-1])
+            genome = darwin.champion(sig.strategy) if darwin else None
+            r, why, px, bars = simulate_trade(sig, fut, atr, genome=genome)
+            if darwin:
+                darwin.record(sig.strategy, {gid: simulate_trade(sig, fut, atr, genome=g)[0]
+                                             for gid, g in darwin.genomes(sig.strategy)}, weight=0.5)
+            n += 1
+            if not learn:
+                continue
             learner.update(sig.strategy, reg, r, weight=0.5, save=False)  # وزن أقل للتاريخ
             memory.save_trade({
                 "symbol": symbol, "market": "history", "strategy": sig.strategy, "side": sig.side,
@@ -159,6 +188,8 @@ def pretrain(learner: Learner, symbol: str, h1: pd.DataFrame, h4: pd.DataFrame, 
                 "exit": px, "pnl": 0, "r_mult": r, "exit_reason": why,
                 "opened": float(t) / 1000, "closed": float(t) / 1000 + bars * 3600,
                 "mode": "pretrain", "shadow": 1})
-            n += 1
-    learner.save()
+    if learn:
+        learner.save()
+    if darwin:
+        darwin.save()
     return n
