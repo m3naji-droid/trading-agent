@@ -120,6 +120,14 @@ details.dw summary::-webkit-details-marker{display:none}
 details.dw summary b::before{content:'◂ ';color:var(--mut);font-size:11px}details.dw[open] summary b::before{content:'▾ '}
 .advice{font-size:12.5px;line-height:1.7;margin-top:6px;padding:8px 10px;border-radius:10px;background:var(--bg);border-inline-start:3px solid var(--acc)}
 .advice.neg{border-color:var(--dn)}.advice.pos{border-color:var(--up)}
+.pbar{margin:8px 0 4px}
+.pr{direction:ltr;display:grid;grid-template-columns:repeat(4,1fr);gap:4px;font-size:10.5px;color:var(--mut);text-align:center;line-height:1.5}.pr b{font-size:11.5px;font-weight:600}
+.track{position:relative;direction:ltr;height:6px;border-radius:3px;background:linear-gradient(90deg,color-mix(in srgb,var(--dn) 35%,var(--line)),var(--line) 50%,color-mix(in srgb,var(--up) 35%,var(--line)));margin:6px 2px 2px}
+.track .fill{position:absolute;top:0;height:6px;border-radius:3px;opacity:.55}
+.track .mk{position:absolute;top:50%;transform:translate(-50%,-50%);border-radius:50%}
+.track .mk.e{width:8px;height:8px;background:var(--tx);border:2px solid var(--card)}
+.track .mk.c{width:13px;height:13px;border:2px solid var(--card);box-shadow:0 0 0 3px color-mix(in srgb,var(--acc) 25%,transparent)}
+.pl{direction:ltr;display:flex;justify-content:space-between;font-size:10px}
 .seg{display:flex;gap:6px}.seg button{flex:1;padding:9px;font-size:13px}.seg button.act{background:var(--acc);color:var(--onacc)}
 </style>
 </head>
@@ -254,10 +262,18 @@ async function openTrade(id){$('modal').style.display='flex';$('mt').textContent
   const mk=[{time:snap(t.opened),position:t.side==='long'?'belowBar':'aboveBar',color:T.acc,shape:t.side==='long'?'arrowUp':'arrowDown',text:'دخول'}];
   if(d.closed&&t.closed)mk.push({time:snap(t.closed),position:'aboveBar',color:T.warn,shape:'circle',text:'خروج'});
   if(d.candles.length)mSeries.setMarkers(mk.sort((a,b)=>a.time-b.time));mChart.timeScale().fitContent();
+  const live=!d.closed?`<div class="grid" style="margin:8px 0"><div class="kpi"><small>السعر الحالي</small><b class="num">${fp(t.price||t.entry)}</b></div><div class="kpi"><small>الربح الحالي</small><b class="num ${(t.upnl||0)>=0?'up':'dn'}">${(t.upnl||0)>=0?'+':''}${f2(t.upnl||0)}$</b></div><div class="kpi"><small>بالمخاطرة</small><b class="num">${f2(t.r_now||0)}R</b></div><div class="kpi"><small>المدة</small><b class="num" style="font-size:13px">${dur(Date.now()/1000-t.opened)}</b></div></div>${pbar(t)}`:'';
   const res=d.closed?`<div class="grid" style="margin:8px 0"><div class="kpi"><small>النتيجة</small><b class="num ${t.pnl>=0?'up':'dn'}">${t.pnl>=0?'+':''}${f2(t.pnl)}$</b></div><div class="kpi"><small>بالمخاطرة</small><b class="num">${f2(t.r_mult)}R</b></div><div class="kpi"><small>الخروج</small><b style="font-size:13px">${EXIT[t.exit_reason]||t.exit_reason}</b></div><div class="kpi"><small>المدة</small><b class="num" style="font-size:13px">${dur(t.closed-t.opened)}</b></div></div>`:'';
   const cn=d.council;const cHtml=cn?`<div class="card" style="margin:10px 0"><h2>🏛️ تصويت المجلس: ${cn.yes}/3 ${cn.approved?'✅ موافقة':'❌ رفض'}</h2>${cn.votes.map(v=>`<div class="vote"><span class="v">${v.vote?'✅':'❌'}</span><div><b>${v.icon} ${v.name}</b><div class="reasons" style="margin:0">${v.reason}</div></div></div>`).join('')}</div>`:'';
-  $('mbody').innerHTML=res+cHtml+`<div class="exp">${d.explain.map(x=>`<p>${x}</p>`).join('')}</div><p class="mut num" style="font-size:11px">${new Date(t.opened*1000).toLocaleString('en-GB')}${t.closed?' → '+new Date(t.closed*1000).toLocaleString('en-GB'):''} · فريم ${d.tf}</p>`;
+  $('mbody').innerHTML=live+res+cHtml+`<div class="exp">${d.explain.map(x=>`<p>${x}</p>`).join('')}</div><p class="mut num" style="font-size:11px">${new Date(t.opened*1000).toLocaleString('en-GB')}${t.closed?' → '+new Date(t.closed*1000).toLocaleString('en-GB'):''} · فريم ${d.tf}</p>`;
  }catch(e){$('mt').textContent='تعذر تحميل الصفقة'}}
+// موقع السعر الحالي بين الوقف والهدف
+function pbar(p){const long=p.side==='long',now=p.price||p.entry,lo=long?p.stop:p.target,hi=long?p.target:p.stop,span=Math.max(hi-lo,1e-12);
+ const pos=x=>Math.min(100,Math.max(0,(x-lo)/span*100)),e=pos(p.entry),c=pos(now),up=long?now>=p.entry:now<=p.entry;
+ const a=Math.min(e,c),w=Math.abs(c-e);
+ const items=[['وقف',p.stop,'dn'],['دخول',p.entry,''],['الآن',now,up?'up':'dn'],['هدف',p.target,'up']].sort((x,y)=>pos(x[1])-pos(y[1])||(x[0]==='الآن'?1:-1));
+ return `<div class="pbar"><div class="pr num">${items.map(([k,v,c])=>`<span>${k}<br><b class="${c}">${fp(v)}</b></span>`).join('')}</div>
+ <div class="track"><i class="fill" style="left:${a}%;width:${w}%;background:${up?'var(--up)':'var(--dn)'}"></i><i class="mk e" style="left:${e}%"></i><i class="mk c" style="left:${c}%;background:${up?'var(--up)':'var(--dn)'}"></i></div></div>`}
 function closeTrade(){$('modal').style.display='none'}
 function dur(s){const h=s/3600;return h<1?Math.round(s/60)+'د':h<48?f2(h,1)+'س':f2(h/24,1)+'ي'}
 async function ntf(a){try{await api('/api/notify',{method:'POST',body:JSON.stringify({action:a})});if(a==='test')alert('أُرسل إشعار تجريبي — يجب أن يصل لجوالك خلال ثوانٍ');refresh()}catch(e){}}
@@ -296,7 +312,7 @@ function render(s){S=s;if(s.strategy_names)Object.assign(STR,s.strategy_names);t
  $('eqv').textContent='$'+f2(s.equity);const dch=s.day_start?s.equity/s.day_start-1:0;$('eqd').innerHTML=`اليوم: <span class="num ${dch>=0?'up':'dn'}">${pct(dch)}</span>`;
  $('dd').textContent=pct(-s.daily_dd)+' / '+(s.max_dd*100).toFixed(0)+'%';$('ddbar').style.width=Math.min(100,Math.max(0,s.daily_dd/s.max_dd*100))+'%';$('ddbar').style.background=s.daily_dd>s.max_dd*.6?'var(--dn)':'var(--acc)';
  $('rk').textContent=(s.risk_now*100).toFixed(1)+'%';$('ls').textContent=s.loss_streak;$('st').textContent=s.status;
- $('pos').innerHTML=s.positions.length?s.positions.map(p=>`<div class="row click" onclick="openTrade('${p.id}')"><div><b>${p.symbol}</b> <span class="tag ${p.side[0]}">${SIDE[p.side]} ${p.market} x${p.leverage}</span>${p.meme?' <span class="tag">🐸</span>':''}<div class="reasons">${p.strategy_ar} · دخول <span class="num">${fp(p.entry)}</span> · وقف <span class="num">${fp(p.stop)}</span> · هدف <span class="num">${fp(p.target)}</span><br>${(p.reasons||[]).slice(0,3).join(' • ')}</div></div><div style="text-align:left"><b class="num ${p.upnl>=0?'up':'dn'}">${p.upnl>=0?'+':''}${f2(p.upnl)}$</b><div class="num mut" style="font-size:11px">${f2(p.r)}R</div></div></div>`).join(''):'<p class="mut">لا توجد صفقات — الوكيل يراقب ويبحث عن فرصة مناسبة</p>';
+ $('pos').innerHTML=s.positions.length?s.positions.map(p=>`<div class="row click" onclick="openTrade('${p.id}')"><div><b>${p.symbol}</b> <span class="tag ${p.side[0]}">${SIDE[p.side]} ${p.market} x${p.leverage}</span>${p.meme?' <span class="tag">🐸</span>':''}<div class="reasons">${p.strategy_ar}</div>${pbar(p)}<div class="reasons">${(p.reasons||[]).slice(0,3).join(' • ')}</div></div><div style="text-align:left"><b class="num ${p.upnl>=0?'up':'dn'}">${p.upnl>=0?'+':''}${f2(p.upnl)}$</b><div class="num mut" style="font-size:11px">${f2(p.r)}R</div></div></div>`).join(''):'<p class="mut">لا توجد صفقات — الوكيل يراقب ويبحث عن فرصة مناسبة</p>';
  // equity chart
  if(!eqChart){eqChart=LightweightCharts.createChart($('eq'),{...chartOpts($('eq'),180),timeScale:{visible:false},rightPriceScale:{visible:false},grid:{vertLines:{visible:false},horzLines:{visible:false}}});eqLine=eqChart.addAreaSeries({lineColor:T.acc,topColor:T.acc+'40',bottomColor:T.acc+'00',lineWidth:2});addEventListener('resize',()=>eqChart.applyOptions({width:$('eq').clientWidth}))}
  if(!eqChart._btc)eqChart._btc=eqChart.addLineSeries({color:T.warn,lineWidth:2,lineStyle:2,priceLineVisible:false,lastValueVisible:false});

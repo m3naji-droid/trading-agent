@@ -183,7 +183,10 @@ async def trade_detail(req: Request, tid: str):
     auth(req)
     pos = agent.broker.positions.get(tid) if agent.broker else None
     if pos:
-        t, closed = dict(pos, price=agent.prices.get(pos["symbol"])), False
+        px = agent.prices.get(pos["symbol"], pos["entry"])
+        d_ = 1 if pos["side"] == "long" else -1
+        upnl = (px - pos["entry"]) * pos["qty"] * d_
+        t, closed = dict(pos, price=px, upnl=upnl, r_now=upnl / pos["risk_usd"] if pos.get("risk_usd") else 0), False
         t.pop("features", None)
     else:
         try:
