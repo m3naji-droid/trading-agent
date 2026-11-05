@@ -89,7 +89,7 @@ class GhostBook:
                                "genome": g, "risk_usd": qty * dist, "opened": time.time(), "fees": fee,
                                "strategy": sig.strategy, "meme": meme}
 
-    def manage(self, prices):
+    def manage(self, prices, track=True):
         closed = []
         for pid, p in list(self.positions.items()):
             px = prices.get(p["symbol"])
@@ -114,6 +114,8 @@ class GhostBook:
                 closed.append((pid, px))
         for pid, px in closed:
             self._close(pid, px)
+        if not track:
+            return
         eq = self.equity(prices)
         self.peak = max(self.peak, eq)
         if self.peak > 0:
@@ -170,3 +172,8 @@ class Ghosts:
 
     def summary(self, prices):
         return [b.summary(prices) for b in self.books.values()]
+
+    def on_tick(self, sym, price):
+        for b in self.books.values():
+            if any(p["symbol"] == sym for p in b.positions.values()):
+                b.manage({sym: price}, track=False)

@@ -33,7 +33,9 @@ from datetime import datetime, timezone
 REPORT_HOUR_UTC = 5  # 8 صباحاً بتوقيت البحرين
 
 log = logging.getLogger("agent")
-EXIT_AR = {"stop": "وقف الخسارة", "trailing": "الوقف المتحرك", "target": "الهدف", "timeout": "انتهاء المدة",
+CANDLE = 900          # إطار شموع الدخول (15 دقيقة)
+FRESH_WINDOW = 150    # يُسمح بالدخول فقط خلال أول دقيقتين ونصف بعد إغلاق الشمعة
+EXIT_AR = {"exchange_target": "هدف المنصة", "stop": "وقف الخسارة", "trailing": "الوقف المتحرك", "target": "الهدف", "timeout": "انتهاء المدة",
            "kill": "مفتاح الطوارئ", "regime": "تغيّر حالة السوق", "exchange_stop": "وقف المنصة"}
 
 
@@ -66,6 +68,9 @@ class Agent:
         self.ghosts = Ghosts()
         self.radar = WhaleRadar()
         self.liq.on_event = self.radar.add_liquidation
+        self.radar.on_tick = self.on_tick
+        self._busy = set()
+        self.ticks = {"n": 0, "actions": 0, "last": 0.0}
         self._blackout_key = None
         self._btc15 = None
         self._h4 = {}            # sym -> (وقت الجلب, شموع 4 ساعات)
@@ -139,7 +144,9 @@ class Agent:
                 import os
                 await asyncio.sleep(1)
                 os._exit(0)
-            await asyncio.sleep(max(1, settings.scan_interval_sec - (time.time() - t0)))
+            now = time.time()
+            next_close = (now // CANDLE + 1) * CANDLE + 3  # 3 ثوانٍ بعد إغلاق شمعة 15 دقيقة
+            await asyncio.sleep(max(1, min(settings.scan_interval_sec - (now - t0), next_close - now)))
 
     # ================================================================ الدورة
     async def cycle(self):
@@ -174,8 +181,8 @@ class Agent:
         tick = await self.spot.fetch_tickers(watch)
         self.prices = {s: float(t["last"]) for s, t in tick.items() if t.get("last")}
 
-        for pos, fill, pnl in await self.broker.sync(self.prices):
-            self._on_closed(pos, fill, pnl, "exchange_stop")
+        for pos, fill, pnl, *why in await self.broker.sync(self.prices):
+            self._on_closed(pos, fill, pnl, why[0] if why else "exchange_stop")
 
         self.equity = await self.broker.equity(self.prices)
         if time.time() - self._last_equity_rec > 300:
@@ -300,7 +307,7 @@ class Agent:
             self.analysis[sym]["last_decision"] = {"strategy": STRATEGY_AR[sig.strategy], "side": sig.side,
                                                    "conf": round(conf, 2), "memory": why, "allowed": allowed,
                                                    "council": cn["yes"], "votes": [v["icon"] + ("✓" if v["vote"] else "✗") for v in cn["votes"]]}
-            if sym in self.pretrained and allowed and accepts(self.darwin.champion(sig.strategy), metrics(ctx, sig)):
+            if sym in self.pretrained and allowed and self.fresh_candle() and accepts(self.darwin.champion(sig.strategy), metrics(ctx, sig)):
                 self.ghosts.consider(sym, sig, conf, cn["yes"], price, float(ctx["df"]["atr"].iloc[-1]),
                                      self.darwin.champion(sig.strategy), self.market_risk_off,
                                      self.mood.blackout(), self.prices, meme=self.is_meme(sym),
@@ -342,6 +349,8 @@ class Agent:
         if (not self.running or self.risk.frozen or self.market_risk_off or self.pretrain_status == "pending"
                 or self.mood.blackout()):
             return
+        if not self.fresh_candle():
+            return  # الدخول فقط فور إغلاق الشمعة — كما في الاختبار التاريخي
         scored.sort(key=lambda x: -x[0])
         for _, conf, sym, ctx, sig, feats, why, cn in scored:
             slots = settings.max_open_positions - len(self.broker.positions)
@@ -448,43 +457,88 @@ class Agent:
         return market, None
 
     # ================================================================ إدارة الصفقات
+    def fresh_candle(self):
+        return (time.time() % CANDLE) <= FRESH_WINDOW
+
     async def manage_positions(self):
         for pos in list(self.broker.positions.values()):
             p = self.prices.get(pos["symbol"])
-            if not p:
+            if not p or pos["id"] in self._busy:
+                continue
+            self._busy.add(pos["id"])
+            try:
+                await self.manage_one(pos, p, full=True)
+            finally:
+                self._busy.discard(pos["id"])
+
+    # ================================================================ متابعة لحظية
+    def on_tick(self, base, price):
+        """كل صفقة تُنفَّذ على Binance تصل هنا (بث مباشر). يُفحص فقط ما فيه صفقة مفتوحة."""
+        sym = f"{base}/USDT"
+        self.prices[sym] = price
+        self.ticks["n"] += 1
+        self.ticks["last"] = time.time()
+        self.ghosts.on_tick(sym, price)
+        if not self.broker:
+            return
+        for pos in list(self.broker.positions.values()):
+            if pos["symbol"] != sym or pos["id"] in self._busy:
                 continue
             long = pos["side"] == "long"
-            hit_stop = p <= pos["stop"] if long else p >= pos["stop"]
-            hit_tgt = p >= pos["target"] if long else p <= pos["target"]
-            paper = self.mode == "paper"  # في المحاكاة: التنفيذ عند مستوى الأمر كما يحدث على المنصة
-            if hit_stop:
-                moved = abs(pos["stop"] - pos["init_stop"]) > 1e-12
-                await self._close(pos, pos["stop"] if paper else p, "trailing" if moved else "stop")
-                continue
-            if hit_tgt:
-                await self._close(pos, pos["target"] if paper else p, "target")
-                continue
-            risk = abs(pos["entry"] - pos["init_stop"])
-            atr = pos["atr"]
-            pos["best"] = max(pos["best"], p) if long else min(pos["best"], p)
-            gain = (pos["best"] - pos["entry"]) if long else (pos["entry"] - pos["best"])
-            g = pos.get("genome") or {"trail": 1.5, "be": 1.0}
-            if gain >= g["be"] * risk:  # وقف متحرك وفق جينات داروين
-                trail = g["trail"] * atr * (0.67 if gain >= 2 * risk else 1.0)
-                ns = max(pos["entry"], pos["best"] - trail) if long else min(pos["entry"], pos["best"] + trail)
-                better = ns > pos["stop"] + 0.1 * atr if long else ns < pos["stop"] - 0.1 * atr
-                if better:
-                    await self.broker.update_stop(pos, ns)
-            # خروج زمني ذكي: 3 أيام بدون تقدم
-            r_now = ((p - pos["entry"]) if long else (pos["entry"] - p)) / risk if risk else 0
-            if time.time() - pos["opened"] > 72 * 3600 and r_now < 0.5:
-                await self._close(pos, p, "timeout")
-                continue
-            reg = self.analysis.get(pos["symbol"], {}).get("regime")
-            if (long and reg == TREND_DOWN or not long and reg == TREND_UP or reg == HIGH_RISK) and r_now > 0.3:
-                await self._close(pos, p, "regime")
+            hit = (price <= pos["stop"] or price >= pos["target"]) if long else (price >= pos["stop"] or price <= pos["target"])
+            new_best = price > pos["best"] if long else price < pos["best"]
+            if hit or new_best:
+                self._busy.add(pos["id"])
+                asyncio.get_running_loop().create_task(self._tick_manage(pos, price))
+
+    async def _tick_manage(self, pos, price):
+        try:
+            if pos["id"] in self.broker.positions:
+                self.ticks["actions"] += 1
+                await self.manage_one(pos, price, full=False)
+        finally:
+            self._busy.discard(pos["id"])
+
+    async def manage_one(self, pos, p, full=True):
+        """full=False: فحص لحظي (الوقف، الهدف، الوقف المتحرك). full=True: أيضاً الخروج الزمني وتغيّر حالة السوق."""
+        long = pos["side"] == "long"
+        hit_stop = p <= pos["stop"] if long else p >= pos["stop"]
+        hit_tgt = p >= pos["target"] if long else p <= pos["target"]
+        paper = self.mode == "paper"  # في المحاكاة: التنفيذ عند مستوى الأمر كما يحدث على المنصة
+        if hit_stop:
+            moved = abs(pos["stop"] - pos["init_stop"]) > 1e-12
+            await self._close(pos, pos["stop"] if paper else p, "trailing" if moved else "stop")
+            return
+        if hit_tgt:
+            await self._close(pos, pos["target"] if paper else p, "target")
+            return
+        risk = abs(pos["entry"] - pos["init_stop"])
+        atr = pos["atr"]
+        pos["best"] = max(pos["best"], p) if long else min(pos["best"], p)
+        gain = (pos["best"] - pos["entry"]) if long else (pos["entry"] - pos["best"])
+        g = pos.get("genome") or {"trail": 1.5, "be": 1.0}
+        if gain >= g["be"] * risk:  # وقف متحرك وفق جينات داروين
+            trail = g["trail"] * atr * (0.67 if gain >= 2 * risk else 1.0)
+            ns = max(pos["entry"], pos["best"] - trail) if long else min(pos["entry"], pos["best"] + trail)
+            step = 0.1 * atr if paper else 0.25 * atr  # على المنصة: تحديث أقل تكراراً لتجنب إغراق Binance بالأوامر
+            better = ns > pos["stop"] + step if long else ns < pos["stop"] - step
+            if better and (paper or time.time() - pos.get("_stop_t", 0) > 10):
+                pos["_stop_t"] = time.time()
+                await self.broker.update_stop(pos, ns)
+        if not full:
+            return
+        # خروج زمني ذكي: 3 أيام بدون تقدم
+        r_now = ((p - pos["entry"]) if long else (pos["entry"] - p)) / risk if risk else 0
+        if time.time() - pos["opened"] > 72 * 3600 and r_now < 0.5:
+            await self._close(pos, p, "timeout")
+            return
+        reg = self.analysis.get(pos["symbol"], {}).get("regime")
+        if (long and reg == TREND_DOWN or not long and reg == TREND_UP or reg == HIGH_RISK) and r_now > 0.3:
+            await self._close(pos, p, "regime")
 
     async def _close(self, pos, price, reason):
+        if pos["id"] not in self.broker.positions:
+            return  # أُغلقت للتو من مسار آخر
         try:
             fill, pnl = await self.broker.close(pos, price, reason)
         except Exception as e:
@@ -830,6 +884,9 @@ class Agent:
             "ghosts": self.ghosts.summary(self.prices),
             "council_stats": memory.council_stats(self.mode),
             "radar_on": self.radar.connected,
+            "realtime": {"on": self.radar.connected and time.time() - self.radar.last_msg < 30,
+                         "ticks": self.ticks["n"], "actions": self.ticks["actions"],
+                         "next_close": (time.time() // CANDLE + 1) * CANDLE, "fresh": self.fresh_candle()},
             "gate": {k: {"status": self.gate_status(k), **{x: y for x, y in self.gate.get(k, {}).items() if x != "ts"}}
                      for k in STRATEGIES},
             "strategy_names": STRATEGY_AR,

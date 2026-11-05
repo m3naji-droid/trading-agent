@@ -117,6 +117,27 @@ class LiveBroker(PaperBroker):
                                       {"stopPrice": stop, "timeInForce": "GTC"})
         pos["stop_order"] = o.get("id")
 
+    async def _place_tp(self, pos):
+        """الهدف على المنصة نفسها (Futures). في Spot يديره الوكيل لحظياً لأن الرصيد محجوز لأمر الوقف."""
+        if pos["market"] != "futures":
+            return
+        ex, sym = self._ex(pos)
+        side = "sell" if pos["side"] == "long" else "buy"
+        qty = float(ex.amount_to_precision(sym, pos["qty"]))
+        tp = float(ex.price_to_precision(sym, pos["target"]))
+        o = await ex.create_order(sym, "TAKE_PROFIT_MARKET", side, qty, None,
+                                  {"stopPrice": tp, "reduceOnly": True, "workingType": "MARK_PRICE"})
+        pos["tp_order"] = o.get("id")
+
+    async def _cancel_tp(self, pos):
+        if pos.get("tp_order"):
+            ex, sym = self._ex(pos)
+            try:
+                await ex.cancel_order(pos["tp_order"], sym)
+            except Exception as e:
+                log.debug(f"cancel tp: {e}")
+            pos["tp_order"] = None
+
     async def _cancel_stop(self, pos):
         if pos.get("stop_order"):
             ex, sym = self._ex(pos)
@@ -157,6 +178,10 @@ class LiveBroker(PaperBroker):
             await self._place_stop(pos)
         except Exception as e:
             memory.log_event(f"⚠️ تعذر وضع وقف الخسارة على المنصة لـ {sym}: {e} — الوكيل سيديره برمجياً", "warn")
+        try:
+            await self._place_tp(pos)
+        except Exception as e:
+            memory.log_event(f"⚠️ تعذر وضع الهدف على المنصة لـ {sym}: {e} — الوكيل سيديره لحظياً", "warn")
         self.positions[pos["id"]] = pos
         self._save()
         return pos
@@ -173,6 +198,7 @@ class LiveBroker(PaperBroker):
     async def close(self, pos, price, reason):
         ex, sym = self._ex(pos)
         await self._cancel_stop(pos)
+        await self._cancel_tp(pos)
         side = "sell" if pos["side"] == "long" else "buy"
         params = {"reduceOnly": True} if pos["market"] == "futures" else {}
         qty = float(ex.amount_to_precision(sym, pos["qty"]))
@@ -188,19 +214,25 @@ class LiveBroker(PaperBroker):
         """يكتشف الصفقات التي أغلقها وقف المنصة أثناء انقطاع أو بين الدورات."""
         closed = []
         for pos in list(self.positions.values()):
-            if not pos.get("stop_order"):
-                continue
             ex, sym = self._ex(pos)
-            try:
-                o = await ex.fetch_order(pos["stop_order"], sym)
-            except Exception:
-                continue
-            if o.get("status") == "closed":
-                fill = float(o.get("average") or pos["stop"])
-                d = 1 if pos["side"] == "long" else -1
-                pnl = (fill - pos["entry"]) * pos["qty"] * d - 2 * pos.get("fees", 0)
-                self.positions.pop(pos["id"], None)
-                closed.append((pos, fill, pnl))
+            for key, reason, ref in (("stop_order", "exchange_stop", "stop"), ("tp_order", "exchange_target", "target")):
+                if not pos.get(key):
+                    continue
+                try:
+                    o = await ex.fetch_order(pos[key], sym)
+                except Exception:
+                    continue
+                if o.get("status") == "closed":
+                    fill = float(o.get("average") or pos[ref])
+                    d = 1 if pos["side"] == "long" else -1
+                    pnl = (fill - pos["entry"]) * pos["qty"] * d - 2 * pos.get("fees", 0)
+                    if key == "stop_order":
+                        await self._cancel_tp(pos)
+                    else:
+                        await self._cancel_stop(pos)
+                    self.positions.pop(pos["id"], None)
+                    closed.append((pos, fill, pnl, reason))
+                    break
         if closed:
             self._save()
         return closed

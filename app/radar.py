@@ -25,6 +25,8 @@ class WhaleRadar:
         self.symbols = []
         self.connected = False
         self._want = []
+        self.on_tick = None   # متابعة لحظية للصفقات المفتوحة
+        self.last_msg = 0.0
 
     def set_symbols(self, syms):
         self._want = sorted(s.split("/")[0] for s in syms)
@@ -52,7 +54,14 @@ class WhaleRadar:
                     async for msg in ws:
                         d = json.loads(msg).get("data") or {}
                         base = d.get("s", "")[:-4]
-                        usd = float(d.get("p", 0)) * float(d.get("q", 0))
+                        px = float(d.get("p", 0))
+                        usd = px * float(d.get("q", 0))
+                        self.last_msg = time.time()
+                        if self.on_tick and px > 0:
+                            try:
+                                self.on_tick(base, px)
+                            except Exception as e:
+                                log.debug(f"tick: {e}")
                         if usd >= threshold(base):
                             self.events.append({"ts": d.get("T", time.time() * 1000) / 1000, "base": base,
                                                 "kind": "sell" if d.get("m") else "buy", "usd": usd,
