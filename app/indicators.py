@@ -57,4 +57,10 @@ def enrich(df: pd.DataFrame) -> pd.DataFrame:
     df["ret"] = c.pct_change()
     df["hh20"] = df["high"].rolling(20).max().shift(1)
     df["ll20"] = df["low"].rolling(20).min().shift(1)
+    # قناة كيلتنر + الانضغاط (البولنجر داخل كيلتنر)
+    df["kc_up"] = df["ema20"] + 1.5 * df["atr"]
+    df["kc_low"] = df["ema20"] - 1.5 * df["atr"]
+    df["squeeze"] = (df["bb_up"] < df["kc_up"]) & (df["bb_low"] > df["kc_low"])
+    df["sq_len"] = df["squeeze"].astype(int).groupby((~df["squeeze"]).cumsum()).cumsum()
+    df["obv"] = (np.sign(c.diff().fillna(0)) * df["volume"]).cumsum()
     return df

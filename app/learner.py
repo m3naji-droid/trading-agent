@@ -31,14 +31,20 @@ class Learner:
     def _arm(self, strategy, regime):
         return self.arms.setdefault(f"{strategy}|{regime}", {"w": 0.0, "l": 0.0, "r": 0.0, "n": 0.0})
 
-    def update(self, strategy, regime, r_mult, weight=1.0, save=True):
+    def update(self, strategy, regime, r_mult, weight=1.0, save=True, decay=True):
         with self.lock:
-            self._update(strategy, regime, r_mult, weight, save)
+            self._update(strategy, regime, r_mult, weight, save, decay)
 
-    def _update(self, strategy, regime, r_mult, weight, save):
-        for a in self.arms.values():
-            for k in a:
-                a[k] *= DECAY
+    def reset(self):
+        with self.lock:
+            self.arms = {}
+            memory.kv_set("arms", self.arms)
+
+    def _update(self, strategy, regime, r_mult, weight, save, decay=True):
+        if decay:
+            for a in self.arms.values():
+                for k in a:
+                    a[k] *= DECAY
         a = self._arm(strategy, regime)
         a["n"] += weight
         a["r"] += r_mult * weight

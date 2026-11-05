@@ -115,6 +115,9 @@ header{padding-top:max(12px,env(safe-area-inset-top))}
 .rfb{background:var(--line);border-radius:99px;width:30px;height:24px;padding:0;font-size:13px;line-height:24px}
 .rfb.spin{animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
 #upd{display:none;position:fixed;left:16px;right:16px;bottom:calc(76px + env(safe-area-inset-bottom));z-index:15;background:var(--acc);color:var(--onacc);border-radius:12px;padding:12px 14px;font-weight:700;text-align:center;box-shadow:0 6px 24px rgba(0,0,0,.4)}
+details.dw summary{display:flex;justify-content:space-between;align-items:center;gap:8px;cursor:pointer;list-style:none}
+details.dw summary::-webkit-details-marker{display:none}
+details.dw summary b::before{content:'◂ ';color:var(--mut);font-size:11px}details.dw[open] summary b::before{content:'▾ '}
 .seg{display:flex;gap:6px}.seg button{flex:1;padding:9px;font-size:13px}.seg button.act{background:var(--acc);color:var(--onacc)}
 </style>
 </head>
@@ -187,6 +190,7 @@ header{padding-top:max(12px,env(safe-area-inset-top))}
 </section>
 
 <section class="tab" id="t-learn">
+  <div class="card"><h2>🛡️ الاستراتيجيات والاختبار المخفي</h2><div id="gate"></div></div>
   <div class="card"><h2>🧬 داروين — تطوّر الاستراتيجيات</h2><div id="darwin"></div></div>
   <div class="card"><h2>🔔 الإشعارات على الجوال</h2><div id="ntf"></div></div>
   <div class="card"><h2>تقدّم التعلم</h2><div id="pt"></div></div>
@@ -226,7 +230,7 @@ const fp=x=>x>=100?f2(x,2):x>=1?f2(x,4):f2(x,6);
 const SIDE={long:'شراء',short:'بيع'};
 const REG={TREND_UP:'📈 صاعد',TREND_DOWN:'📉 هابط',RANGE:'↔️ عرضي',HIGH_RISK:'⚠️ خطر'};
 const PH={accumulation:'تجميع',distribution:'تصريف',none:''};
-const STR={momentum_breakout:'الزخم والاختراق',trend_pullback:'الارتداد مع الاتجاه',mean_reversion:'الارتداد للمتوسط',smc_reversal:'انعكاس الأموال الذكية'};
+let STR={momentum_breakout:'الزخم والاختراق',trend_pullback:'الارتداد مع الاتجاه',mean_reversion:'الارتداد للمتوسط',smc_reversal:'انعكاس الأموال الذكية'};
 
 async function api(p,o={}){o.headers={'Content-Type':'application/json','Authorization':'Bearer '+TOKEN};const r=await fetch(p,o);if(r.status===401){$('login').style.display='flex';throw 0}const j=await r.json();if(!r.ok)throw new Error(j.detail||'خطأ');return j}
 async function doLogin(){try{const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:$('pw').value})});const j=await r.json();if(!r.ok)throw new Error(j.detail);TOKEN=j.token;localStorage.setItem('tok',TOKEN);$('login').style.display='none';refresh()}catch(e){$('lerr').textContent=e.message||'خطأ'}}
@@ -281,7 +285,7 @@ async function loadChart(){const s=$('sym').value;if(!s||!cs)return;try{const d=
 
 let LOADED_VER=null;
 function hardRefresh(){$('rfb').classList.add('spin');setTimeout(()=>location.reload(),250)}
-function render(s){S=s;if(s.version){if(LOADED_VER===null)LOADED_VER=s.version;else if(s.version!==LOADED_VER)$('upd').style.display='block'}try{renderPerf(s)}catch(e){console.log(e)}
+function render(s){S=s;if(s.strategy_names)Object.assign(STR,s.strategy_names);try{renderGate(s)}catch(e){console.log(e)}if(s.version){if(LOADED_VER===null)LOADED_VER=s.version;else if(s.version!==LOADED_VER)$('upd').style.display='block'}try{renderPerf(s)}catch(e){console.log(e)}
  for(const[f,a]of[[renderMood,s.mood],[renderDarwin,s.darwin],[renderCouncil,s.council_stats]])try{f(a)}catch(e){console.log(e)}
  try{renderGhosts(s)}catch(e){console.log(e)}$('ver').textContent=s.version||'—';
  $('mode').textContent=s.mode.toUpperCase();$('mode').className='pill '+(s.mode==='live'?'w':'on');
@@ -298,9 +302,9 @@ function render(s){S=s;if(s.version){if(LOADED_VER===null)LOADED_VER=s.version;e
  // market
  $('uni').textContent=`(${s.analysis.length})`;
  const sel=$('sym'),cur=sel.value;if(sel.options.length!==s.analysis.length){sel.innerHTML=s.analysis.map(a=>`<option>${a.symbol}</option>`).join('');sel.value=cur||'BTC/USDT'}
- $('ana').innerHTML=s.analysis.map(a=>`<div class="row"><div>${a.rank?`<span class="num mut" style="font-size:11px">#${a.rank}</span> `:''}<b>${a.symbol.replace('/USDT','')}</b> <span class="tag">${REG[a.regime]||a.regime}</span> ${PH[a.phase]?`<span class="tag">${PH[a.phase]}</span>`:''} ${a.learned?'':'<span class="tag">يدرس…</span>'}<div class="reasons">ADX ${a.adx} · RSI ${a.rsi} · FVG ${a.fvg} · OB ${a.ob}${a.bos?` · كسر هيكل ${a.bos>0?'↑':'↓'}`:''}${a.last_decision?`<br>آخر قرار: ${a.last_decision.strategy} (${SIDE[a.last_decision.side]}) ثقة ${Math.round(a.last_decision.conf*100)}%${a.last_decision.votes?` · المجلس ${a.last_decision.votes.join(' ')}`:''} — ${a.last_decision.memory}`:''}</div></div><b class="num">${fp(a.price)}</b></div>`).join('')||'<p class="mut">جارٍ التحميل…</p>';
+ $('ana').innerHTML=s.analysis.map(a=>`<div class="row"><div>${a.rank?`<span class="num mut" style="font-size:11px">#${a.rank}</span> `:''}<b>${a.symbol.replace('/USDT','')}</b> <span class="tag">${REG[a.regime]||a.regime}</span> ${PH[a.phase]?`<span class="tag">${PH[a.phase]}</span>`:''} ${a.learned?'':'<span class="tag">يدرس…</span>'} ${a.rs!=null?`<span class="tag" title="القوة النسبية مقابل البيتكوين">${a.rs<=0.2?'💪 قوية':a.rs>=0.8?'🥀 ضعيفة':'قوة '+Math.round((1-a.rs)*100)+'%'}</span>`:''}<div class="reasons">ADX ${a.adx} · RSI ${a.rsi} · FVG ${a.fvg} · OB ${a.ob}${a.bos?` · كسر هيكل ${a.bos>0?'↑':'↓'}`:''}${a.last_decision?`<br>آخر قرار: ${a.last_decision.strategy} (${SIDE[a.last_decision.side]}) ثقة ${Math.round(a.last_decision.conf*100)}%${a.last_decision.votes?` · المجلس ${a.last_decision.votes.join(' ')}`:''} — ${a.last_decision.memory}`:''}</div></div><b class="num">${fp(a.price)}</b></div>`).join('')||'<p class="mut">جارٍ التحميل…</p>';
  // learning
- $('pt').innerHTML=`<div class="row"><span>دراسة التاريخ</span><b>${s.pretrain==='done'?'✅ مكتملة':'⏳ جارية'} <span class="num">(${s.pretrained}/${s.universe})</span></b></div><div class="row"><span>صفقات تجريبية موازية مفتوحة</span><b class="num">${s.shadow_open}</b></div><div class="row"><span>بث التصفيات المباشر</span><b>${s.liq_stream?'🟢 متصل':'⚪ غير متصل'}</b></div><div class="row"><span>ذاكرة السيرفر</span><b class="${s.memory&&s.memory.available_mb<150?'dn':''}" style="text-align:left">${s.memory?`متاح <span class="num">${s.memory.available_mb} / ${s.memory.total_mb} MB</span><br><small class="mut">الوكيل يستخدم <span class="num">${s.memory.agent_mb} MB</span></small>`:'—'}</b></div><div class="row"><span>إصدار النظام</span><b class="num">${s.version||'—'}${s.version_date?' · '+s.version_date:''}</b></div><div class="row"><span>سقف الرافعة</span><b class="num">x${s.max_leverage}</b></div>`;
+ $('pt').innerHTML=`<div class="row"><span>العملات الجاهزة للتداول</span><b class="num">${s.pretrained}/${s.universe}</b></div><div class="row"><span>صفقات تجريبية موازية مفتوحة</span><b class="num">${s.shadow_open}</b></div><div class="row"><span>بث التصفيات المباشر</span><b>${s.liq_stream?'🟢 متصل':'⚪ غير متصل'}</b></div><div class="row"><span>ذاكرة السيرفر</span><b class="${s.memory&&s.memory.available_mb<150?'dn':''}" style="text-align:left">${s.memory?`متاح <span class="num">${s.memory.available_mb} / ${s.memory.total_mb} MB</span><br><small class="mut">الوكيل يستخدم <span class="num">${s.memory.agent_mb} MB</span></small>`:'—'}</b></div><div class="row"><span>إصدار النظام</span><b class="num">${s.version||'—'}${s.version_date?' · '+s.version_date:''}</b></div><div class="row"><span>سقف الرافعة</span><b class="num">x${s.max_leverage}</b></div>`;
  $('lb').innerHTML=s.leaderboard.slice(0,12).map(r=>`<div class="row"><div><b>${r.strategy_ar}</b> <span class="tag">${r.regime_ar}</span><div class="reasons num">n=${f2(r.n,0)} · فوز ${f2(r.winrate*100,0)}% · متوسط ${f2(r.avg_r)}R</div></div><b class="num">${f2(r.score*100,0)}</b></div>`).join('')||'<p class="mut">لا بيانات بعد</p>';
  const st=Object.entries(s.stats);$('sts').innerHTML=st.length?st.map(([k,v])=>`<div class="row"><b>${STR[k]||k}</b><span class="num">${v.n} صفقة · ${f2(v.wins/v.n*100,0)}% · <span class="${v.pnl>=0?'up':'dn'}">${f2(v.pnl)}$</span></span></div>`).join(''):'<p class="mut">لا صفقات فعلية بعد</p>';
  $('les').innerHTML=s.lessons.length?s.lessons.map(l=>`<div class="ev learn">${l.symbol} · ${STR[l.strategy]} · ${REG[l.regime]} · <span class="num">${f2(l.r_mult)}R</span><div class="reasons">${(l.reasons||[]).slice(0,3).join(' • ')}</div></div>`).join(''):'<p class="mut">لا خسائر مسجلة بعد</p>';
@@ -308,7 +312,7 @@ function render(s){S=s;if(s.version){if(LOADED_VER===null)LOADED_VER=s.version;e
  $('trs').innerHTML=s.trades.length?s.trades.map(t=>`<div class="row click" onclick="openTrade('${t.id}')"><div><b>${t.symbol}</b> <span class="tag ${t.side[0]}">${SIDE[t.side]}</span><div class="reasons">${STR[t.strategy]} · ${EXIT[t.exit_reason]||''} · ${new Date(t.closed*1000).toLocaleString('ar')} ›</div></div><b class="num ${t.pnl>=0?'up':'dn'}">${t.pnl>=0?'+':''}${f2(t.pnl)}$</b></div>`).join(''):'<p class="mut">لا صفقات مغلقة بعد</p>';
  $('evs').innerHTML=s.events.map(e=>`<div class="ev ${e.level}"><time class="num">${new Date(e.ts*1000).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})}</time>${e.msg}</div>`).join('');
 }
-const GENE={stop:'مسافة الوقف',rr:'بُعد الهدف',trail:'الوقف المتحرك',be:'بدء التتبع'};
+const GENE={stop:'مسافة الوقف',rr:'بُعد الهدف',trail:'الوقف المتحرك',be:'بدء التتبع',vz:'أقل حجم',adx:'أقل قوة اتجاه',rsi:'أقصى تمدد RSI',minrr:'أقل عائد/مخاطرة'};
 const ago=t=>{const m=Math.round((Date.now()/1000-t)/60);return m<1?'الآن':m<60?`قبل ${m} د`:m<1440?`قبل ${Math.round(m/60)} س`:`قبل ${Math.round(m/1440)} ي`};
 const usd=x=>x>=1e6?'$'+f2(x/1e6,1)+'M':'$'+f2(x/1e3,0)+'K';
 function fngColor(v){return v<25?'#f05a5a':v<45?'#f2a54b':v<55?'#8b98a7':v<75?'#8fd17a':'#21c08b'}
@@ -335,10 +339,25 @@ function renderCouncil(c){if(!c)return;const A=c.approved,R=c.rejected;
  $('cstats').innerHTML=`<div class="grid" style="grid-template-columns:1fr 1fr">${col('وافق عليها',A,'✅')}${col('رفضها',R,'❌')}</div>
  <p class="reasons" style="margin:8px 0">${A.n+R.n<10?'يحتاج المزيد من الفرص للحكم.':A.avg_r>R.avg_r?'✅ المجلس محق حتى الآن: الفرص التي وافق عليها أفضل من التي رفضها.':'⚠️ الفرص المرفوضة كانت أفضل — المجلس متشدد أكثر من اللازم حالياً.'}</p>
  ${Object.entries(c.members||{}).map(([k,m])=>`<div class="row"><span>${M[k]}</span><b class="num">${m.n?f2(m.right/m.n*100,0)+'%':'—'}</b></div>`).join('')}<p class="reasons">دقة كل عضو: نسبة المرات التي كان تصويته صحيحاً فيها (يُقاس على الصفقات التجريبية الموازية).</p>`}
+const GST={approved:['✅','معتمدة','up'],testing:['⏳','تحت الاختبار','mut'],suspended:['⛔','معلّقة مؤقتاً','dn'],rejected:['📘','للتعلم فقط','mut']};
+function renderGate(s){const g=s.gate;if(!g)return;const st=s.study||{},dr=s.dream;
+ let h=`<div class="row"><span>📚 دراسة <span class="num">${st.years||2}</span> سنة من التاريخ</span><b>${st.finished?'✅ مكتملة':`⏳ <span class="num">${st.done||0}/${st.total||0}</span>`}</b></div>`;
+ if(!st.finished&&st.phase)h+=`<div class="reasons">${st.phase}${st.current?' · '+st.current:''}</div><div class="bar"><i style="width:${f2((st.pct||0)*100,0)}%"></i></div>`;
+ h+=`<div class="row"><span>🌙 آخر حلم</span><b>${dr?ago(dr.ts)+` · <span class="num">${dr.signals}</span> فرصة`:'كل ليلة الساعة 4 فجراً'}</b></div>`;
+ const order={approved:0,suspended:1,testing:2,rejected:3};
+ h+=Object.entries(g).sort((a,b)=>order[a[1].status]-order[b[1].status]).map(([k,v])=>{const [ic,lb,cl]=GST[v.status]||GST.testing,te=v.test,re=v.recent;
+  return `<div class="ev"><div style="display:flex;justify-content:space-between;gap:8px"><b>${STR[k]||k}</b><span class="chip ${cl}">${ic} ${lb}</span></div>
+  <div class="reasons">${te&&te.n?`المستقبل المخفي: <span class="num">${f2(te.avg_r)}R</span> على <span class="num">${te.n}</span> صفقة${te.winrate!=null?` · ربح <span class="num">${f2(te.winrate*100,0)}%</span>`:''}`:''}${re&&re.n?` · آخر 30 يوماً: <span class="num">${f2(re.avg_r)}R</span>`:''}${v.reason?`<br>${v.reason}`:''}</div></div>`}).join('');
+ h+='<p class="reasons" style="margin-top:8px">يتعلم الوكيل من أول 70% من التاريخ، ثم يُختبر على آخر 30% لم يرها. لا يتداول فعلياً إلا بالمعتمدة؛ الباقي يُتابع في الصفقات التجريبية، وتُعتمد إذا أثبتت نفسها حياً (40 فرصة بمتوسط +0.10R).</p>';
+ $('gate').innerHTML=h}
+const DW_OPEN=new Set();
 function renderDarwin(d){if(!d)return;const st=Object.entries(d.strategies);
  $('darwin').innerHTML=st.map(([k,v])=>{const c=v.champion,bc=v.challengers[0];
-  const genes=Object.entries(c.genes).map(([g,x])=>{const df=d.default[g],ch=x>df+0.005?'↑':x<df-0.005?'↓':'';return `<span class="gene">${GENE[g]} <b class="num">${x}</b>${ch?` <span class="mut">${ch}</span>`:''}</span>`}).join('');
-  return `<div class="ev"><div style="display:flex;justify-content:space-between"><b>${STR[k]}</b><span class="chip">الجيل ${v.generation}</span></div><div style="margin:4px 0">${genes}</div><div class="reasons">البطل: متوسط <span class="num">${f2(c.avg_r)}R</span> على <span class="num">${c.samples}</span> اختبار${bc?` · أقوى منافس: <span class="num">${f2(bc.avg_r)}R</span> (${bc.samples}/${d.min_samples})`:''}</div></div>`}).join('')
+  const gl=(keys)=>(keys||Object.keys(c.genes)).map(g=>{const x=c.genes[g],df=d.default[g],same=Math.abs(x-df)<0.005,ch=x>df+0.005?'↑':x<df-0.005?'↓':'';
+   const free=same&&['vz','adx','rsi'].includes(g);return `<span class="gene">${GENE[g]} <b class="num">${free?'بلا حد':x}</b>${ch?` <span class="mut">${ch}</span>`:''}</span>`}).join('');
+  const genes=`<div class="reasons" style="margin:2px 0">إدارة الصفقة:</div>${gl(d.exit_genes)}<div class="reasons" style="margin:4px 0 2px">شروط الدخول:</div>${gl(d.entry_genes)}${c.take!=null&&c.take<0.995?`<div class="reasons">يقبل <span class="num">${f2(c.take*100,0)}%</span> من الفرص</div>`:''}`;
+  const open=DW_OPEN.has(k)?' open':'';
+  return `<details class="ev dw"${open} ontoggle="this.open?DW_OPEN.add('${k}'):DW_OPEN.delete('${k}')"><summary><b>${STR[k]}</b><span><span class="num ${c.avg_r>=0?'up':'dn'}">${f2(c.avg_r)}R</span> <span class="chip">الجيل ${v.generation}</span></span></summary><div style="margin:4px 0">${genes}</div><div class="reasons">البطل: متوسط <span class="num">${f2(c.avg_r)}R</span> على <span class="num">${c.samples}</span> اختبار${bc?` · أقوى منافس: <span class="num">${f2(bc.avg_r)}R</span> (${bc.samples}/${d.min_samples})`:''}</div></details>`}).join('')
  +(d.history&&d.history.length?`<h2 style="margin-top:12px">آخر الترقيات</h2>`+d.history.slice(0,5).map(h=>`<div class="ev learn">🧬 ${STR[h.strategy]} → الجيل ${h.generation} <span class="num">(${f2(h.old_r)}R → ${f2(h.new_r)}R)</span><div class="reasons">${ago(h.ts)}</div></div>`).join(''):'')
  +'<p class="reasons" style="margin-top:8px">كل استراتيجية لها "بطل" و5 منافسين بجينات معدّلة، يُختبرون جميعاً على نفس الفرص. يُرقّى المنافس فقط بعد 40 اختباراً وتفوق واضح، وبحد أقصى ترقية واحدة يومياً.</p>'}
 

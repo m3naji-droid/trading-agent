@@ -15,14 +15,17 @@ from . import notify, performance
 from .indicators import enrich
 from .regime import detect_regime, HIGH_RISK, TREND_UP, TREND_DOWN, LABELS_AR
 from . import smc as smc_mod
-from .strategies import run_all, apply_orderflow, features, STRATEGY_AR, STRATEGIES
+from .strategies import run_all, apply_orderflow, features, metrics, STRATEGY_AR, STRATEGIES, ORIGINAL
+from .cross import add_btc_link, add_rs, add_funding, rs_panel
+from .darwin import accepts
+from . import study
 from .mood import Mood
 from .council import deliberate
 from .darwin import Darwin, GENE_AR
 from .ghosts import Ghosts
 from .radar import WhaleRadar
 from .orderflow import LiquidationTracker, snapshot
-from .learner import Learner, pretrain, simulate_trade
+from .learner import Learner, simulate_trade
 from .risk import RiskManager
 from .broker import PaperBroker, LiveBroker
 from datetime import datetime, timezone
@@ -64,6 +67,17 @@ class Agent:
         self.radar = WhaleRadar()
         self.liq.on_event = self.radar.add_liquidation
         self._blackout_key = None
+        self._btc15 = None
+        self._h4 = {}            # sym -> (وقت الجلب, شموع 4 ساعات)
+        self._closes1h = {}      # base -> سلسلة الإغلاق (للقوة النسبية)
+        self.rs_rank = {}
+        self.funding, self._fund_t = {}, 0
+        self.oi, self._oi_t = {}, {}
+        self.gate = memory.kv_get("gate", {}) or {}
+        self.study = memory.kv_get("study", {}) or {}
+        self.study_progress = {"phase": "", "done": len(self.study.get("done", [])), "total": 0, "pct": 0.0}
+        self._last_gate_check = 0
+        self._studying = False
         self.universe, self.analysis, self.prices = [], {}, {}
         self.rank_info = {}
         self.restart_requested = False
@@ -140,8 +154,8 @@ class Agent:
             if added and len(added) < len(uni):
                 memory.log_event(f"➕ عملات جديدة دخلت القائمة: {'، '.join(s.split('/')[0] for s in added)}")
             self.radar.set_symbols(uni)
-            if self.pretrain_status != "running":
-                asyncio.create_task(self.pretrain_all())
+            if not self._studying:
+                asyncio.create_task(self.study_all())
 
         watch = sorted(set(self.universe) | {p["symbol"] for p in self.broker.positions.values()})
         tick = await self.spot.fetch_tickers(watch)
@@ -155,10 +169,12 @@ class Agent:
             memory.record_equity(self.equity, self.prices.get("BTC/USDT"), self.mode)
             self._last_equity_rec = time.time()
         self.maybe_daily_report()
+        self.maybe_dream()
         reason = self.risk.on_equity(self.equity)
         if reason:
             await self.kill(reason, manual=False)
 
+        await self.refresh_derivatives()
         sem = asyncio.Semaphore(3)  # تحليل 3 عملات بالتوازي فقط لتوفير الذاكرة
 
         async def run(sym):
@@ -169,7 +185,9 @@ class Agent:
                     log.debug(f"{sym}: {e}")
                     return []
 
-        results = await asyncio.gather(*[run(s) for s in self.universe])
+        first = await run("BTC/USDT") if "BTC/USDT" in self.universe else []  # البيتكوين أولاً (ظل البيتكوين)
+        results = [first] + await asyncio.gather(*[run(s) for s in self.universe if s != "BTC/USDT"])
+        self.update_rs()
         btc = self.analysis.get("BTC/USDT", {})
         risk_off = btc.get("regime") == HIGH_RISK
         if risk_off != self.market_risk_off:
@@ -212,14 +230,32 @@ class Agent:
             return []
         df15, h1 = df15.iloc[:-1], h1.iloc[:-1]  # الشموع المغلقة فقط
 
+        base = sym.split("/")[0]
+        h4 = await self.get_h4(sym)
+        btc15 = self._btc15
+        liq = self.liq.recent(sym)
+
         def compute():
             e15 = enrich(df15).dropna().reset_index(drop=True)
             e1 = enrich(h1).dropna().reset_index(drop=True)
+            if base == "BTC":
+                self._btc15 = e15
+            elif btc15 is not None:
+                e15 = add_btc_link(e15, btc15)
+            e15 = add_rs(e15, self.rs_rank.get(base))
+            e15 = add_funding(e15, self.funding.get(sym), self.oi.get(sym)).reset_index(drop=True)
+            self._closes1h[base] = e1.set_index("ts")["close"].iloc[-200:]
             reg = detect_regime(e1)
-            ctx = {"df": e15, "htf": e1, "regime": reg, "smc": smc_mod.analyze(e15), "flow": None}
-            return ctx, run_all(ctx)
+            ctx = {"df": e15, "htf": e1, "ttf": h4, "regime": reg, "smc": smc_mod.analyze(e15), "flow": None,
+                   "base": base, "liq": liq}
+            strict = run_all(ctx)
+            got = {x.strategy for x in strict}
+            near = [x for x in run_all({**ctx, "relax": True}) if x.strategy not in got]
+            return ctx, strict, near
 
-        ctx, sigs = await asyncio.to_thread(compute)
+        ctx, sigs, near = await asyncio.to_thread(compute)
+        for sg in near:  # فرص قريبة: للتعلم فقط
+            self._open_shadow(sym, ctx, sg, features(ctx, sg), None, near=True)
         self._resolve_shadows(sym, ctx["df"])
         s = ctx["smc"]
         self.analysis[sym] = {
@@ -230,6 +266,7 @@ class Agent:
             "rsi": round(float(ctx["df"]["rsi"].iloc[-1]), 1),
             "signals": [x.strategy for x in sigs], "learned": sym in self.pretrained,
             "rank": (self.rank_info.get(sym) or {}).get("rank"),
+            "rs": self.rs_rank.get(base), "near": [x.strategy for x in near],
         }
         return [(sym, ctx, sg) for sg in sigs]
 
@@ -250,12 +287,23 @@ class Agent:
             self.analysis[sym]["last_decision"] = {"strategy": STRATEGY_AR[sig.strategy], "side": sig.side,
                                                    "conf": round(conf, 2), "memory": why, "allowed": allowed,
                                                    "council": cn["yes"], "votes": [v["icon"] + ("✓" if v["vote"] else "✗") for v in cn["votes"]]}
-            if sym in self.pretrained and allowed:
+            if sym in self.pretrained and allowed and accepts(self.darwin.champion(sig.strategy), metrics(ctx, sig)):
                 self.ghosts.consider(sym, sig, conf, cn["yes"], price, float(ctx["df"]["atr"].iloc[-1]),
                                      self.darwin.champion(sig.strategy), self.market_risk_off,
                                      self.mood.blackout(), self.prices)
             if not allowed:
                 memory.log_event(f"🧠 رفض {sym} {STRATEGY_AR[sig.strategy]}: {why}")
+                continue
+            gst = self.gate_status(sig.strategy)
+            champ = self.darwin.champion(sig.strategy)
+            if conf >= settings.min_confidence and sym not in open_syms and gst != "approved":
+                self._throttled(f"gate_{sig.strategy}", 6 * 3600,
+                                f"🛡️ {STRATEGY_AR[sig.strategy]}: فرصة في {sym} لكن الاستراتيجية لم تُعتمد بعد "
+                                f"({self.gate.get(sig.strategy, {}).get('reason', 'تحت الاختبار')}) — تُسجَّل للتعلم فقط")
+                continue
+            if conf >= settings.min_confidence and sym not in open_syms and not accepts(champ, metrics(ctx, sig)):
+                self._throttled(f"dw_{sym}_{sig.strategy}", 3600,
+                                f"🧬 فلتر داروين تجاوز {sym} ({STRATEGY_AR[sig.strategy]}): الإشارة لا تحقق شروط الدخول المتطورة")
                 continue
             if conf >= settings.min_confidence and sym not in open_syms:
                 if not cn["approved"]:
@@ -268,6 +316,13 @@ class Agent:
                     continue
                 scored.append((conf * min(sig.rr, 3), conf, sym, ctx, sig, feats, why, cn))
 
+        if time.time() - self._last_gate_check > 3600:
+            self._last_gate_check = time.time()
+            for st_ in study.live_redemption(self.gate, self.mode):
+                memory.log_event(f"🛡️ اعتماد «{STRATEGY_AR[st_]}»: أثبتت نفسها في التداول التجريبي الحي", "learn")
+                notify.send("🛡️ استراتيجية جديدة معتمدة", f"«{STRATEGY_AR[st_]}» أثبتت نفسها حياً وصار الوكيل يتداول بها.",
+                            tags=["shield"])
+            memory.kv_set("gate", self.gate)
         if (not self.running or self.risk.frozen or self.market_risk_off or self.pretrain_status == "pending"
                 or self.mood.blackout()):
             return
@@ -444,7 +499,7 @@ class Agent:
         notify.send(f"📰 {title}", text, tags=["newspaper"])
 
     # ================================================================ التجريب الموازي (ظل)
-    def _open_shadow(self, sym, ctx, sig, feats, council=None):
+    def _open_shadow(self, sym, ctx, sig, feats, council=None, near=False):
         key = f"{sym}|{sig.strategy}"
         if any(v["key"] == key for v in self.shadow.values()):
             return
@@ -453,7 +508,7 @@ class Agent:
                             "entry": sig.entry, "stop": sig.stop, "target": sig.target,
                             "atr": float(ctx["df"]["atr"].iloc[-1]), "ts": int(ctx["df"]["ts"].iloc[-1]),
                             "regime": ctx["regime"]["regime"], "features": feats, "reasons": sig.reasons,
-                            "council": council}
+                            "council": council, "m": metrics(ctx, sig), "near": near}
 
     def _resolve_shadows(self, sym, df):
         for sid, s in list(self.shadow.items()):
@@ -467,49 +522,207 @@ class Agent:
             r, why, px, bars = simulate_trade(sg, fut, s["atr"], genome=champ)
             if why == "timeout" and bars < 48:
                 continue
-            self.darwin.record(s["strategy"], {gid: simulate_trade(sg, fut, s["atr"], genome=g)[0]
-                                               for gid, g in self.darwin.genomes(s["strategy"])})
-            self.learner.update(s["strategy"], s["regime"], r, weight=0.7)
-            memory.save_trade({**s, "market": "shadow", "qty": 0, "leverage": 1, "exit": px, "pnl": 0,
+            w = 0.3 if s.get("near") else 1.0
+            self.darwin.record(s["strategy"], self.darwin.evaluate(s["strategy"], sg, s.get("m"), fut, s["atr"],
+                                                                   simulate_trade), weight=w)
+            self.learner.update(s["strategy"], s["regime"], r, weight=0.3 if s.get("near") else 0.7)
+            memory.save_trade({**s, "market": "near" if s.get("near") else "shadow", "qty": 0, "leverage": 1, "exit": px, "pnl": 0,
                                "r_mult": r, "exit_reason": why, "opened": s["ts"] / 1000,
                                "closed": time.time(), "mode": self.mode, "shadow": 1})
             self.shadow.pop(sid, None)
 
     # ================================================================ دراسة التاريخ
-    async def pretrain_all(self):
-        self.pretrain_status = "running"
-        todo = [s for s in self.universe if s not in self.pretrained]
-        for i, sym in enumerate(todo):
-            self.status = f"يدرس تاريخ {sym} ({i + 1}/{len(todo)})"
-            try:
-                h1 = await ohlcv_df(self.spot, sym, "1h", settings.pretrain_bars)
-                h4 = await ohlcv_df(self.spot, sym, "4h", 500)
-                n = await asyncio.to_thread(pretrain, self.learner, sym, h1, h4, 1, self.darwin)
-                self.pretrained.add(sym)
-                memory.kv_set("pretrained", sorted(self.pretrained))
-                memory.log_event(f"📚 درس تاريخ {sym}: {n} صفقة افتراضية سابقة", "learn")
-            except Exception as e:
-                memory.log_event(f"⚠️ تعذر دراسة {sym}: {e}", "warn")
-            await asyncio.sleep(1)
-        self.pretrain_status = "done"
-        memory.log_event("🎓 انتهت دراسة التاريخ — الوكيل جاهز للتداول", "learn")
-        if not memory.kv_get("darwin_seeded"):
-            await self.seed_darwin()
+    # ================================================================ دراسة سنتين + الاختبار المخفي
+    async def study_all(self):
+        self._studying = True
+        try:
+            await self._study_all()
+        except Exception as e:
+            log.exception("study_all")
+            memory.log_event(f"⚠️ توقفت الدراسة مؤقتاً: {str(e)[:120]} — ستُستأنف لاحقاً", "warn")
+            if self.pretrained:
+                self.pretrain_status = "done"
+        finally:
+            self._studying = False
 
-    async def seed_darwin(self):
-        """مرة واحدة: يختبر جينات داروين على تاريخ العملات المدروسة سابقاً (قبل وجود داروين)."""
-        memory.log_event("🧬 داروين يبدأ اختبار الجينات على تاريخ العملات…", "learn")
-        total = 0
-        for sym in list(self.universe):
+    async def _study_all(self):
+        """
+        يدرس سنتين من تاريخ كل عملة في الخلفية (يُستأنف تلقائياً بعد أي إعادة تشغيل).
+        المرحلة 1: تحميل/تحديث الشموع على القرص. المرحلة 2: المحاكاة + بوابة الاعتماد.
+        """
+        self.pretrain_status = "running" if not self.pretrained else "done"
+        st = self.study
+        if st.get("version") != 2:
+            # بداية جديدة: مسح الدراسة القديمة القصيرة (6 أسابيع) وإعادة التعلم من سنتين
+            with memory._lock, memory._conn() as c:
+                c.execute("DELETE FROM trades WHERE mode='pretrain'")
+            self.learner.reset()
+            st = self.study = {"version": 2, "done": [], "agg": {}, "started": time.time()}
+            memory.kv_set("study", st)
+            memory.log_event("📚 بدء دراسة سنتين من تاريخ كل عملة + الاختبار على المستقبل المخفي (تعمل في الخلفية)", "learn")
+        todo = [s_ for s_ in self.universe if s_.split("/")[0] not in st["done"]]
+        if not todo:
+            self.pretrain_status = "done"
+            return
+        bars = settings.pretrain_bars
+        raw1, raw4, fund = {}, {}, {}
+        self.study_progress.update(phase="تحميل التاريخ", total=len(self.universe))
+        for i, sym in enumerate(self.universe):
+            base = sym.split("/")[0]
+            self.study_progress.update(pct=i / len(self.universe), current=base)
             try:
-                h1 = await ohlcv_df(self.spot, sym, "1h", settings.pretrain_bars)
-                h4 = await ohlcv_df(self.spot, sym, "4h", 500)
-                total += await asyncio.to_thread(pretrain, self.learner, sym, h1, h4, 1, self.darwin, False)
+                raw1[base] = await study.update_history(self.spot, sym, "1h", bars)
+                if sym in todo:
+                    raw4[base] = await study.update_history(self.spot, sym, "4h", bars // 4)
+                    fund[base] = await study.update_funding(self.fut, sym, bars // 24 + 2)
             except Exception as e:
-                log.warning(f"darwin seed {sym}: {e}")
-            await asyncio.sleep(2)
+                memory.log_event(f"⚠️ تعذر تحميل تاريخ {sym}: {e}", "warn")
+            await asyncio.sleep(0.5)
+        panel = await asyncio.to_thread(rs_panel, {b: d.set_index("ts")["close"] for b, d in raw1.items() if len(d)})
+        btc_e = enrich(raw1["BTC"]).dropna().reset_index(drop=True) if "BTC" in raw1 and len(raw1["BTC"]) else None
+        self.study_progress.update(phase="المحاكاة والاختبار المخفي")
+        for i, sym in enumerate(todo):
+            base = sym.split("/")[0]
+            if base not in raw1 or base not in raw4 or len(raw1[base]) < 400:
+                continue
+            self.status = f"يدرس سنتين من تاريخ {base} ({i + 1}/{len(todo)})"
+            ts = raw1[base]["ts"].values
+            split = ts[int(len(ts) * (1 - study.TEST_SHARE))]
+            prog = lambda p, i=i: self.study_progress.update(pct=(i + p) / len(todo), current=base)
+            try:
+                stats, n = await asyncio.to_thread(
+                    study.simulate_symbol, base, raw1[base], raw4[base], btc_e,
+                    panel[base] if base in panel else None, fund.get(base), split, self.darwin, self.learner,
+                    step=2, recent_from=time.time() * 1000 - 30 * 86_400_000, progress=prog)
+            except Exception as e:
+                log.exception("study")
+                memory.log_event(f"⚠️ تعذرت دراسة {base}: {e}", "warn")
+                continue
+            study.merge_stats(st["agg"], stats)
+            st["done"].append(base)
+            memory.kv_set("study", st)
+            self.pretrained.add(sym)
+            memory.kv_set("pretrained", sorted(self.pretrained))
+            raw4.pop(base, None)
+            memory.log_event(f"📚 درس سنتين من {base}: {n} إشارة تاريخية", "learn")
+            gc.collect()
+        if len(st["done"]) < max(1, min(3, len(self.universe) // 3)):
+            memory.log_event("⚠️ لم يكتمل تحميل التاريخ لعدد كافٍ من العملات — ستُعاد المحاولة لاحقاً", "warn")
+            self.pretrain_status = "done" if self.pretrained else "running"
+            return
+        self.gate = study.compute_gate(st["agg"], self.gate)
+        study.apply_recent(self.gate, st["agg"])
+        memory.kv_set("gate", self.gate)
+        st["finished"] = time.time()
+        memory.kv_set("study", st)
         memory.kv_set("darwin_seeded", True)
-        memory.log_event(f"🧬 داروين أنهى اختبار {total} إشارة تاريخية", "learn")
+        self.pretrain_status = "done"
+        self.study_progress.update(phase="مكتملة", pct=1.0, current="")
+        ok = [STRATEGY_AR[k] for k, g in self.gate.items() if g["status"] == "approved"]
+        memory.log_event(f"🎓 انتهت دراسة السنتين. معتمدة للتداول: {'، '.join(ok) or 'لا شيء بعد'}", "learn")
+        notify.send("🎓 انتهت دراسة السنتين", f"اجتازت الاختبار المخفي: {'، '.join(ok) or 'لا شيء بعد'}\nالبقية تُختبر حياً.",
+                    tags=["mortar_board"])
+
+    def gate_status(self, strategy):
+        g = self.gate.get(strategy)
+        if g:
+            return g["status"]
+        return "approved" if strategy in ORIGINAL else "testing"  # قبل انتهاء الدراسة: القديمة فقط
+
+    async def dream(self):
+        """🌙 حلم الوكيل: إعادة محاكاة آخر 30 يوماً بكل الاستراتيجيات والجينات."""
+        memory.log_event("🌙 الوكيل يحلم: إعادة محاكاة آخر 30 يوماً…", "learn")
+        agg, total = {}, 0
+        raw1 = {}
+        for sym in self.universe:
+            try:
+                raw1[sym.split("/")[0]] = await study.update_history(self.spot, sym, "1h", settings.pretrain_bars)
+            except Exception:
+                pass
+        panel = await asyncio.to_thread(rs_panel, {b: d.set_index("ts")["close"] for b, d in raw1.items() if len(d)})
+        btc_e = enrich(raw1["BTC"].iloc[-1500:]).dropna().reset_index(drop=True) if "BTC" in raw1 else None
+        since = time.time() * 1000 - 30 * 86_400_000
+        for sym in self.universe:
+            base = sym.split("/")[0]
+            if base not in raw1 or len(raw1[base]) < 600:
+                continue
+            try:
+                r4 = await study.update_history(self.spot, sym, "4h", settings.pretrain_bars // 4)
+                f = await study.update_funding(self.fut, sym, settings.pretrain_bars // 24 + 2)
+                r1 = raw1[base].iloc[-1500:]  # سياق كافٍ قبل آخر 30 يوماً
+                stats, n = await asyncio.to_thread(
+                    study.simulate_symbol, base, r1, r4.iloc[-600:], btc_e,
+                    panel[base] if base in panel else None, f, float("inf"), self.darwin, self.learner,
+                    start_ts=since, save=False, lw=0.1, dw=0.3, recent_from=since)
+                study.merge_stats(agg, stats, keys=("recent",))
+                total += n
+            except Exception as e:
+                log.warning(f"dream {sym}: {e}")
+            await asyncio.sleep(1)
+        changes = study.apply_recent(self.gate, agg)
+        memory.kv_set("gate", self.gate)
+        memory.kv_set("last_dream", {"ts": time.time(), "signals": total})
+        for s_, stt in changes:
+            msg = (f"⛔ تعليق مؤقت لـ«{STRATEGY_AR[s_]}»: تخسر في السوق الحالي" if stt == "suspended"
+                   else f"✅ عودة «{STRATEGY_AR[s_]}»: تعافت في آخر 30 يوماً")
+            memory.log_event(msg, "learn")
+            notify.send("🌙 نتيجة حلم الوكيل", msg, tags=["crescent_moon"])
+        memory.log_event(f"🌙 انتهى الحلم: {total} فرصة أُعيدت محاكاتها", "learn")
+
+    def maybe_dream(self):
+        now = datetime.now(timezone.utc)
+        today = now.strftime("%Y-%m-%d")
+        if now.hour == 1 and self.pretrain_status == "done" and self.study.get("finished") \
+                and memory.kv_get("dream_day") != today:
+            memory.kv_set("dream_day", today)
+            asyncio.create_task(self.dream())
+
+    # ================================================================ بيانات مشتركة
+    async def get_h4(self, sym):
+        t, df = self._h4.get(sym, (0, None))
+        if time.time() - t > 900 or df is None:
+            try:
+                raw = await ohlcv_df(self.spot, sym, "4h", 260)
+                df = await asyncio.to_thread(lambda: enrich(raw.iloc[:-1]).dropna().reset_index(drop=True))
+                self._h4[sym] = (time.time(), df)
+            except Exception:
+                pass
+        return df
+
+    async def refresh_derivatives(self):
+        if time.time() - self._fund_t > 300:
+            try:
+                rates = await self.fut.fetch_funding_rates()
+                self.funding = {k.split(":")[0]: float(v.get("fundingRate") or 0) for k, v in rates.items()}
+                self._fund_t = time.time()
+            except Exception as e:
+                log.debug(f"funding: {e}")
+        # العقود المفتوحة: 5 عملات كل دورة، كل عملة كل 30 دقيقة
+        due = [s_ for s_ in self.universe if time.time() - self._oi_t.get(s_, 0) > 1800][:5]
+        for sym in due:
+            self._oi_t[sym] = time.time()
+            try:
+                h = await self.fut.fetch_open_interest_history(fut_symbol(sym), "1h", limit=25)
+                v = [float(x.get("openInterestValue") or x.get("openInterestAmount") or 0) for x in h]
+                if len(v) >= 2 and v[0] > 0:
+                    self.oi[sym] = v[-1] / v[0] - 1
+            except Exception:
+                pass
+
+    def update_rs(self):
+        if len(self._closes1h) < 3 or "BTC" not in self._closes1h:
+            return
+        try:
+            p = rs_panel(dict(self._closes1h))
+            last = p.iloc[-1].dropna()
+            self.rs_rank = {k: float(v) for k, v in last.items()}
+        except Exception as e:
+            log.debug(f"rs: {e}")
+
+    def _throttled(self, key, sec, msg, level="info"):
+        if time.time() - self._skip_log.get(key, 0) > sec:
+            self._skip_log[key] = time.time()
+            memory.log_event(msg, level)
 
     # ================================================================ مزاج السوق
     async def mood_loop(self):
@@ -556,6 +769,13 @@ class Agent:
             "ghosts": self.ghosts.summary(self.prices),
             "council_stats": memory.council_stats(self.mode),
             "radar_on": self.radar.connected,
+            "gate": {k: {"status": self.gate_status(k), **{x: y for x, y in self.gate.get(k, {}).items() if x != "ts"}}
+                     for k in STRATEGIES},
+            "strategy_names": STRATEGY_AR,
+            "study": {**self.study_progress, "status": self.pretrain_status,
+                      "done": len(self.study.get("done", [])), "total": len(self.universe),
+                      "finished": self.study.get("finished"), "years": round(settings.pretrain_bars / 8760, 1)},
+            "dream": memory.kv_get("last_dream"),
         }
 
     async def candles(self, sym, tf="15m"):

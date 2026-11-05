@@ -82,6 +82,16 @@ class LiquidationTracker:
         while q and q[0][0] < cut:
             q.popleft()
 
+    def recent(self, symbol: str, sec=900) -> dict:
+        """تصفيات آخر sec ثانية (لاستراتيجية صيد التصفيات)."""
+        raw = symbol.replace("/", "").split(":")[0]
+        cut = time.time() - sec
+        q = [e for e in self.events.get(raw, []) if e[0] >= cut]
+        base = raw[:-4]
+        thr = 2_000_000 if base in ("BTC", "ETH") else 500_000 if base in ("SOL", "XRP", "BNB", "DOGE") else 200_000
+        return {"long_usd": sum(e[3] for e in q if e[1] == "long"),
+                "short_usd": sum(e[3] for e in q if e[1] == "short"), "thr": thr} if self.connected else None
+
     def summary(self, symbol: str) -> dict:
         """symbol بصيغة ccxt مثل BTC/USDT."""
         raw = symbol.replace("/", "").split(":")[0]

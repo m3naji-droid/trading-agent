@@ -55,7 +55,7 @@ class Settings:
     max_total_exposure: float = _f("MAX_TOTAL_EXPOSURE", 3.0)   # مجموع القيمة الاسمية / الرصيد
 
     # ---- التعلم ----
-    pretrain_bars: int = _i("PRETRAIN_BARS", 1000)
+    pretrain_bars: int = _i("PRETRAIN_BARS", 17520)  # سنتان من شموع الساعة
     memory_similarity: float = _f("MEMORY_SIMILARITY", 0.90)
     min_confidence: float = _f("MIN_CONFIDENCE", 0.55)
 
