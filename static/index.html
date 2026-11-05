@@ -118,6 +118,8 @@ header{padding-top:max(12px,env(safe-area-inset-top))}
 details.dw summary{display:flex;justify-content:space-between;align-items:center;gap:8px;cursor:pointer;list-style:none}
 details.dw summary::-webkit-details-marker{display:none}
 details.dw summary b::before{content:'◂ ';color:var(--mut);font-size:11px}details.dw[open] summary b::before{content:'▾ '}
+.advice{font-size:12.5px;line-height:1.7;margin-top:6px;padding:8px 10px;border-radius:10px;background:var(--bg);border-inline-start:3px solid var(--acc)}
+.advice.neg{border-color:var(--dn)}.advice.pos{border-color:var(--up)}
 .seg{display:flex;gap:6px}.seg button{flex:1;padding:9px;font-size:13px}.seg button.act{background:var(--acc);color:var(--onacc)}
 </style>
 </head>
@@ -324,7 +326,12 @@ function renderMood(m){if(!m)return;const f=m.fng;let h='';
  if(m.blackout)h+=`<div class="banner" style="display:block;margin:10px 0 0;color:var(--warn);border-color:var(--warn);background:color-mix(in srgb,var(--warn) 10%,transparent)">📅 إيقاف مؤقت للدخول: ${m.blackout.title} (${new Date(m.blackout.ts*1000).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})})</div>`;
  else if(m.next_event)h+=`<p class="reasons" style="margin-top:8px">📅 الحدث المهم القادم: <b>${m.next_event.title}</b> · <span class="num">${new Date(m.next_event.ts*1000).toLocaleString('en-GB',{weekday:'short',hour:'2-digit',minute:'2-digit'})}</span> — يتوقف الدخول قبله بنصف ساعة</p>`;
  $('mood').innerHTML=h;
- $('news').innerHTML=m.news&&m.news.length?m.news.slice(0,15).map(n=>`<div class="ev news"><span class="dot" style="background:${n.score>0?'var(--up)':n.score<0?'var(--dn)':'var(--line)'}"></span><a href="${n.link}" target="_blank" rel="noopener" dir="ltr" style="unicode-bidi:plaintext">${n.title.replace(/</g,'&lt;')}</a><div class="reasons">${n.source} · ${ago(n.ts)}${n.coins.length?' · '+n.coins.map(c=>`<span class="chip">${c}</span>`).join(''):''}${n.severe?' · <b class="dn">⚠️ خبر خطير</b>':''}</div></div>`).join(''):'<p class="mut">لا أخبار بعد</p>'}
+ const CAT={security:'🔒 أمن',regulation:'⚖️ تنظيم',etf:'🏦 مؤسسات',macro:'🌍 اقتصاد',listing:'📋 إدراج',tech:'🛠️ تقنية',liquidation:'💥 تصفيات',whale:'🐋 حيتان',general:''};
+ $('news').innerHTML=m.news&&m.news.length?m.news.slice(0,15).map(n=>{const ar=n.title_ar,esc=x=>x.replace(/</g,'&lt;');
+  return `<div class="ev news"><div><span class="dot" style="background:${n.score>0?'var(--up)':n.score<0?'var(--dn)':'var(--line)'}"></span><a href="${n.link}" target="_blank" rel="noopener" ${ar?'':'dir="ltr" style="unicode-bidi:plaintext"'}><b style="font-weight:500">${esc(ar||n.title)}</b></a></div>
+  <div class="reasons">${n.source} · ${ago(n.ts)}${CAT[n.cat]?` · <span class="chip">${CAT[n.cat]}</span>`:''}${n.coins.map(c=>`<span class="chip">${c}</span>`).join('')}${n.severe?' · <b class="dn">⚠️ خبر خطير</b>':''}</div>
+  <div class="advice ${n.severe||n.score<0?'neg':n.score>0?'pos':''}">💡 <b>النصيحة:</b> ${n.advice}</div></div>`}).join('')
+  +'<p class="reasons" style="margin-top:8px">الترجمة آلية، والنصيحة قراءة آلية مبنية على نوع الخبر ومعنوياته — ليست نصيحة مالية.</p>':'<p class="mut">لا أخبار بعد</p>'}
 let gChart,gSeries={};
 function renderGhosts(s){if(!s.ghosts)return;
  if(!gChart){gChart=LightweightCharts.createChart($('gch'),{...chartOpts($('gch'),200),rightPriceScale:{borderColor:'#1f2a36'},localization:{priceFormatter:v=>(v>=0?'+':'')+v.toFixed(1)+'%'}});

@@ -764,7 +764,8 @@ class Agent:
             "stats": memory.stats(0), "shadow_stats": memory.stats(1),
             "shadow_open": len(self.shadow),
             "memory": memory_usage(),
-            "mood": self.mood.summary(),
+            "mood": self.mood.summary({p["symbol"].split("/")[0] for p in self.broker.positions.values()}
+                                      if self.broker else set()),
             "darwin": self.darwin.summary(),
             "ghosts": self.ghosts.summary(self.prices),
             "council_stats": memory.council_stats(self.mode),
