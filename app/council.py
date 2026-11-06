@@ -65,6 +65,9 @@ def cautious(sig, ctx, risk, pattern, mood, base):
         ms = mood.market_score()
         if ms < -0.35 and d == 1:
             concerns.append("معنويات الأخبار سلبية")
+        smm = getattr(mood, "smart_m", 0.0) or 0.0
+        if smm * d < -0.4:
+            concerns.append("المال الكبير يتحرك عكس الصفقة")
         oc = getattr(mood, "onchain", None)
         if oc is not None and d == 1:
             if oc.stable and oc.stable["chg_7d"] < -0.01:

@@ -28,6 +28,7 @@ from .radar import WhaleRadar
 from .explorer import Explorer
 from .onchain import OnChain
 from . import exits
+from .evidence import SmartMoney
 from .orderflow import LiquidationTracker, snapshot
 from .learner import Learner, simulate_trade
 from .risk import RiskManager
@@ -70,6 +71,7 @@ class Agent:
         self.liq = LiquidationTracker()
         self.mood = Mood()
         self.onchain = OnChain()
+        self.smart = SmartMoney()
         self.mood.onchain = self.onchain
         self.darwin = Darwin(list(STRATEGIES))
         self.ghosts = Ghosts()
@@ -132,6 +134,7 @@ class Agent:
         asyncio.create_task(self.liq.run())
         asyncio.create_task(self.radar.run())
         asyncio.create_task(self.mood_loop())
+        asyncio.create_task(self.smart_loop())
         asyncio.create_task(self.loop())
 
     async def loop(self):
@@ -311,6 +314,7 @@ class Agent:
 
     # ================================================================ القرار
     async def decide(self, cands):
+        sm_m, _ = self.smart.market_score()
         self.last_scan = {"ts": time.time(), "signals": len(cands), "coins": len(self.universe)}
         open_syms = {p["symbol"] for p in self.broker.positions.values()}
         scored = []
@@ -320,6 +324,14 @@ class Agent:
             apply_orderflow(sig, ctx["flow"])
             reg = ctx["regime"]["regime"]
             conf = self.learner.blended_confidence(sig, reg)
+            # 🕵️ المال الكبير: يؤثر فقط بأوزان أثبتتها محكمة الأدلة
+            d_ = 1 if sig.side == "long" else -1
+            veto, cadj = self.smart.coin_view(sym.split("/")[0], sig.side)
+            sm_adj = 0.08 * sm_m * d_ + 0.06 * cadj
+            if abs(sm_adj) >= 0.01:
+                conf = max(0.0, min(1.0, conf + sm_adj))
+                sig.reasons.append(f"🕵️ المال الكبير {'يدعم' if sm_adj > 0 else 'يعاكس'} الصفقة")
+            self.mood.smart_m = sm_m
             feats = features(ctx, sig)
             allowed, why, pstats = memory.check_pattern(sig.strategy, sig.side, feats)
             cn = deliberate(sig, ctx, conf, self.risk, pstats, self.mood, sym.split("/")[0])
@@ -341,6 +353,10 @@ class Agent:
                 self.blocks.append((time.time(), "memory"))
                 continue
             meme = self.is_meme(sym)
+            if veto and conf >= settings.min_confidence:
+                self.blocks.append((time.time(), "unlock"))
+                self._throttled(f"unlock_{sym}", 6 * 3600, f"🔓 تجاوز شراء {sym}: {veto} — حماية من ضغط البيع")
+                continue
             gst = self.gate_status(sig.strategy, meme)
             champ = self.darwin.champion(sig.strategy)
             if conf < settings.min_confidence:
@@ -587,7 +603,7 @@ class Agent:
                 "darwin": "🧬 لا تحقق شروط الدخول المتطورة (داروين)", "memory": "🧠 تشبه أنماطاً خسرت سابقاً",
                 "corr": "🔗 مرتبطة بقوة بصفقات مفتوحة", "meme": "🐸 الحد الأقصى للعملات الميمية",
                 "slots": "📦 كل خانات الصفقات ممتلئة", "min_notional": "💡 الحد الأدنى لـ Binance يتطلب مخاطرة أكبر",
-                "confidence": "📉 ثقة أقل من المطلوب"}
+                "confidence": "📉 ثقة أقل من المطلوب", "unlock": "🔓 فتح عملات قريب (حماية)"}
 
     def why_not(self):
         items = []
@@ -1121,6 +1137,29 @@ class Agent:
             memory.kv_set("dream_day", today)
             asyncio.create_task(self.dream())
 
+    # ================================================================ رادار الأموال الكبرى
+    async def smart_loop(self):
+        await asyncio.sleep(20)
+        while True:
+            try:
+                names = {}
+                for sym, info in (self.rank_info or {}).items():
+                    b = sym.split("/")[0]
+                    names[(info.get("name") or "").lower()] = b
+                for sym in self.universe:
+                    b = sym.split("/")[0]
+                    names[b.lower()] = b
+                tradable = {m["base"] for m in (getattr(self.spot, "markets", None) or {}).values()
+                            if m.get("quote") == "USDT" and m.get("active") and m.get("spot")}
+                ctx = {"btc": self.prices.get("BTC/USDT"), "radar_flow": self.radar.snapshot(3600)["flow"],
+                       "names": names, "tradable": tradable, "prices": dict(self.prices)}
+                await asyncio.to_thread(self.smart.refresh, ctx)
+                if self.study.get("finished") and not memory.kv_get("sm_backfilled"):
+                    await asyncio.to_thread(self.smart.backfill)
+            except Exception as e:
+                log.warning(f"smart: {e}")
+            await asyncio.sleep(60)
+
     # ================================================================ بيانات مشتركة
     async def get_h4(self, sym):
         t, df = self._h4.get(sym, (0, None))
@@ -1218,6 +1257,7 @@ class Agent:
             "radar_on": self.radar.connected,
             "explorer": self.explorer.summary(self.prices),
             "exec": execution.summary(self.mode),
+            "smart": self.smart.summary(),
             "why": self.why_not(),
             "health": self.health(),
             "safe": self.safe_mode(),

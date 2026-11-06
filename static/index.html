@@ -153,6 +153,10 @@ details.info{margin-top:8px}details.info summary{font-size:12px;color:var(--acc)
 details.info div{font-size:12.5px;line-height:1.75;color:var(--mut);margin-top:6px;padding:8px 10px;background:var(--bg);border-radius:10px}
 ul.cl{margin:6px 18px 2px 0;font-size:13px;line-height:1.8;color:var(--mut)}details.ev summary{cursor:pointer;list-style:none}details.ev summary::-webkit-details-marker{display:none}
 .hero .big{font-size:32px}
+.smv{display:flex;gap:10px;align-items:center;padding:12px;border-radius:12px;margin-bottom:8px;background:var(--bg)}.smv>span{font-size:26px}
+.smv.up{background:color-mix(in srgb,var(--up) 12%,transparent)}.smv.up b{color:var(--up)}.smv.dn{background:color-mix(in srgb,var(--dn) 12%,transparent)}.smv.dn b{color:var(--dn)}
+.chip.warn{color:var(--warn)}
+details.smd .sml{padding:0 4px;background:none;margin:4px 0 0}details.smd .sml div{margin:0;padding:0;background:none;border-radius:0}details.smd .sml>.ev{padding:8px 0}
 .seg{display:flex;gap:6px}.seg button{flex:1;padding:9px;font-size:13px}.seg button.act{background:var(--acc);color:var(--onacc)}
 </style>
 </head>
@@ -213,6 +217,7 @@ ul.cl{margin:6px 18px 2px 0;font-size:13px;line-height:1.8;color:var(--mut)}deta
 <!-- ======================= 🌍 السوق ======================= -->
 <section class="tab" id="t-mkt">
   <div class="jump" id="j-mkt"></div>
+  <div class="card" id="sec-smart" data-k="smart"><h2>🕵️ رادار الأموال الكبرى</h2><div id="smart"><div class="sk"></div><div class="sk s2"></div></div></div>
   <div class="card" id="sec-mood" data-k="mood"><h2>🌡️ مزاج السوق</h2><div id="mood"><div class="sk"></div><div class="sk s2"></div></div></div>
   <div class="card" id="sec-coins" data-k="ana"><h2>العملات <span id="uni" class="mut"></span></h2>
     <input id="q" class="search" placeholder="🔍 ابحث عن عملة…" oninput="renderAna()" dir="auto">
@@ -263,6 +268,7 @@ ul.cl{margin:6px 18px 2px 0;font-size:13px;line-height:1.8;color:var(--mut)}deta
   <div class="card" id="sec-health" data-k="health"><h2>❤️ صحة الوكيل</h2><div id="health"><div class="sk"></div><div class="sk s2"></div></div></div>
   <div class="card" id="sec-ntf" data-k="ntf"><h2>🔔 الإشعارات</h2><div id="ntf"></div></div>
   <div class="card" id="sec-maint" data-k="maint"><h2>🛠️ الحماية والصيانة</h2><div id="maint"><div class="sk"></div><div class="sk s2"></div></div></div>
+  <div class="card" id="sec-whale" data-k="whalek"><h2>🐋 مصدر إضافي للحيتان (اختياري)</h2><div id="whalek"></div></div>
   <div class="card" id="sec-misc" data-k="misc"><h2>أدوات</h2><div class="btns"><button onclick="openThemes()">🎨 المظهر</button><button onclick="exportCSV()">📤 تصدير الصفقات (Excel)</button></div></div>
   <div class="card" id="sec-chlog" data-k="chlog"><h2>📝 سجل التحديثات</h2><div id="chlog"><p class="mut">اضغط لعرض السجل</p></div></div>
 </section>
@@ -389,6 +395,7 @@ function renderStrip(s){const h=s.health||{},rt=s.realtime||{},nx=rt.next_close?
  const chips=[[s.frozen?'🚨':s.running?'🟢':'⏸️',s.frozen?'مجمّد':s.running?'يعمل':'متوقف'],[rt.on?'⚡':'⏱️',rt.on?'متابعة لحظية':'كل دقيقة'],
   ['🕯️',nx==null?'—':`التحليل بعد <span class="num">${Math.floor(nx/60)}:${String(nx%60).padStart(2,'0')}</span>`]];
  if(s.safe)chips.push(['🐢','الوضع الآمن']);if(s.mood&&s.mood.blackout)chips.push(['📅','حدث اقتصادي']);if(s.market_risk_off)chips.push(['🛑','خطر السوق']);
+ if(s.smart&&s.smart.used&&s.smart.used.length)chips.push(['🕵️',s.smart.verdict[0]==='buy'?'المال الكبير يشتري':s.smart.verdict[0]==='sell'?'المال الكبير يبيع':'المال الكبير محايد']);
  if(s.mood&&s.mood.fng)chips.push(['🌡️',`${s.mood.fng.label_ar} <span class="num">${s.mood.fng.value}</span>`]);
  $('strip').innerHTML=chips.map(([i,t])=>`<span>${i} ${t}</span>`).join('')}
 function renderHealth(h){if(!h)return;$('health').innerHTML=`<div style="text-align:center;margin-bottom:8px"><b class="big num ${h.score>=80?'up':h.score>=60?'':'dn'}">${h.score}</b><span class="mut"> / 100</span></div>`+
@@ -430,7 +437,7 @@ async function loadChart(){const s=$('sym').value;if(!s||!cs)return;try{const d=
 let LOADED_VER=null;
 function hardRefresh(){$('rfb').classList.add('spin');setTimeout(()=>location.reload(),250)}
 function render(s){S=s;for(const[f,a]of[[renderWhy,s],[renderStrip,s],[renderHealth,s.health],[renderSafe,s],[renderEvMini,s],[renderCal,(s.perf||{}).daily]])try{f(a)}catch(e){console.log(e)}if(s.strategy_names)Object.assign(STR,s.strategy_names);try{renderGate(s)}catch(e){console.log(e)}if(s.version){if(LOADED_VER===null)LOADED_VER=s.version;else if(s.version!==LOADED_VER)$('upd').style.display='block'}try{renderPerf(s)}catch(e){console.log(e)}
- for(const[f,a]of[[renderOnchain,s.onchain],[renderMC,(s.perf||{}).monte_carlo],[renderMaint,s],[renderExplorer,s.explorer],[renderMood,s.mood],[renderDarwin,s.darwin],[renderCouncil,s.council_stats]])try{f(a)}catch(e){console.log(e)}
+ for(const[f,a]of[[renderSmart,s.smart],[renderOnchain,s.onchain],[renderMC,(s.perf||{}).monte_carlo],[renderMaint,s],[renderExplorer,s.explorer],[renderMood,s.mood],[renderDarwin,s.darwin],[renderCouncil,s.council_stats]])try{f(a)}catch(e){console.log(e)}
  try{renderGhosts(s)}catch(e){console.log(e)}$('ver').textContent=s.version||'—';
  $('mode').textContent=s.mode.toUpperCase();$('mode').className='pill '+(s.mode==='live'?'w':'on');
  $('run').textContent=s.frozen?'مُجمَّد':s.running?'يعمل':'متوقف';$('run').className='pill '+(s.frozen?'off':s.running?'on':'w');
@@ -529,7 +536,7 @@ function renderMC(m){const el=$('mc');if(!m){el.innerHTML='';return}
  <div class="grid" style="grid-template-columns:repeat(3,1fr)">${k('10%',f2(m.p_dd10*100,0)+'%')}${k('20%',f2(m.p_dd20*100,0)+'%',m.p_dd20>0.1?'dn':'')}${k('30%',f2(m.p_dd30*100,0)+'%',m.p_dd30>0.05?'dn':'')}</div>
  <div class="row"><span>أسوأ تراجع في 95% من الحالات</span><b class="num dn">${f2(m.dd_p95*100,1)}%</b></div>
  ${info(`ليست توقعاً بل نطاق احتمالات من نتائج الوكيل نفسه. إذا كان احتمال تراجع 20% مرتفعاً، فقلّل رأس المال المخصص أو المخاطرة.`)}`}
-async function mt(a,extra={}){try{const r=await api('/api/maint',{method:'POST',body:JSON.stringify({action:a,...extra})});if(a!=='backup_now')alert(r.ok?'✅ تم — النبضة وصلت للمراقب':'⚠️ لم تصل النبضة — تأكد من الرابط');else alert('✅ أُنشئت نسخة احتياطية على السيرفر');refresh()}catch(e){if(e)alert(e.message)}}
+async function mt(a,extra={}){try{const r=await api('/api/maint',{method:'POST',body:JSON.stringify({action:a,...extra})});if(a==='whale_key')alert('✅ تم الحفظ');else if(a!=='backup_now')alert(r.ok?'✅ تم — النبضة وصلت للمراقب':'⚠️ لم تصل النبضة — تأكد من الرابط');else alert('✅ أُنشئت نسخة احتياطية على السيرفر');refresh()}catch(e){if(e)alert(e.message)}}
 async function dlBackup(){const b=$('dlb');b.textContent='⏳ جارٍ التجهيز…';try{const r=await fetch('/api/backup',{headers:{'Authorization':'Bearer '+TOKEN}});if(!r.ok)throw 0;const bl=await r.blob();const u=URL.createObjectURL(bl);const a=document.createElement('a');a.href=u;a.download=`agent-backup-${new Date().toISOString().slice(0,10)}.db.gz`;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),5000)}catch(e){alert('تعذر التنزيل')}b.textContent='⬇️ تنزيل نسخة لجوالك'}
 async function doRestore(f){if(!f)return;if(!confirm('سيُستبدل كل تعلّم الوكيل وذاكرته بهذه النسخة (تُحفظ نسخة من الحالي أولاً). متابعة؟'))return;
  try{const r=await fetch('/api/restore',{method:'POST',headers:{'Authorization':'Bearer '+TOKEN,'Content-Type':'application/octet-stream'},body:await f.arrayBuffer()});const j=await r.json();if(!r.ok)throw new Error(j.detail);alert('✅ تمت الاستعادة — الوكيل يعيد التشغيل خلال ثوانٍ');setTimeout(()=>location.reload(),8000)}catch(e){alert('❌ '+(e.message||'فشلت الاستعادة'))}}
@@ -547,6 +554,21 @@ function renderMaint(s){const t=s.testnet||{},m=s.maint||{},x=s.exec||{};
  <button style="grid-column:1/-1" onclick="$('rsf').click()">⬆️ استعادة من نسخة</button></div><input type="file" id="rsf" accept=".gz,.db" style="display:none" onchange="doRestore(this.files[0])"></div>`;
  const keep=document.activeElement&&document.activeElement.id==='hcu'?$('hcu').value:null;
  if(keep!==null)return; $('maint').innerHTML=h}
+const SMST={learning:['🎓','يتعلم','mut'],approved:['✅','معتمد','up'],inverse:['🔄','يُقرأ بالعكس','warn'],useless:['💤','لا يتنبأ','mut']};
+function renderSmart(sm){if(!sm)return;const [vk,vt]=sm.verdict,col=vk==='buy'?'up':vk==='sell'?'dn':'mut',ic=vk==='buy'?'🟢':vk==='sell'?'🔴':'⚪';
+ const ok=sm.sources.filter(x=>x.status==='approved'||x.status==='inverse').length;
+ let h=`<div class="smv ${col}"><span>${ic}</span><div><b>${vt}</b><div class="reasons" style="margin:2px 0 0">الوكيل يستخدم <b class="num">${ok}</b> من 10 مصادر أثبتت صدقها في محكمة الأدلة</div></div></div>`;
+ const evs=(sm.events||[]).filter(e=>Date.now()/1000-e.ts<3*86400).slice(0,4);
+ if(evs.length)h+=`<div class="ev"><b>📢 أحداث يتابعها الوكيل</b>${evs.map(e=>`<div class="reasons">• ${e.title} <span class="mut">${ago(e.ts)}</span></div>`).join('')}</div>`;
+ if(sm.unlocks&&sm.unlocks.length)h+=`<div class="ev"><b>🔓 فتح عملات قريب</b><div class="reasons">${sm.unlocks.slice(0,5).map(u=>`${u.base} ${(h=>h<24?`بعد ${Math.max(1,Math.round(h))} س`:`بعد ${Math.round(h/24)} ي`)((u.ts-Date.now()/1000)/3600)}${u.pct?` (${f2(u.pct*100,1)}%)`:''}`).join(' · ')} — الوكيل لا يشتري هذه العملات قبل الموعد بيومين</div></div>`;
+ h+=`<details class="info smd"><summary>🔍 عرض المصادر العشرة</summary><div class="sml">${sm.sources.map(x=>{const [i,l,c]=x.err&&!x.text?['⚪','غير متاح','mut']:(SMST[x.status]||SMST.learning);
+  const bar=x.s!=null?`<span class="num ${x.s>0.1?'up':x.s<-0.1?'dn':'mut'}" style="font-size:11px">${x.s>0?'+':''}${f2(x.s,2)}</span>`:'';
+  return `<div class="ev"><div style="display:flex;justify-content:space-between;gap:6px"><b>${x.icon} ${x.name}</b><span class="chip ${c}">${i} ${l}${x.status==='learning'&&!x.event?` <span class="num">${Math.min(x.n,x.need)}/${x.need}</span>`:''}</span></div>
+  <div class="reasons" style="margin:2px 0">${x.plain}</div>${x.text?`<div style="font-size:12.5px">${bar} ${x.text}</div>`:`<div class="reasons">${x.err||'جارٍ الجلب…'}</div>`}</div>`}).join('')}</div></details>`;
+ h+=info('الوكيل يقرأ آثاراً علنية يتركها المال الكبير: أموال صناديق ETF، فرق السعر في Coinbase، طباعة العملات المستقرة، الحيتان، مشتريات الشركات، مراكز صناديق التحوط، فتح العملات، إعلانات الإدراج، أسواق التوقعات، وصفقات الخيارات الضخمة.<br><br>لكنه لا يصدّق أي مصدر مباشرة: «محكمة الأدلة» تقارن ما قاله كل مصدر بما فعله السعر فعلاً بعدها. المصدر الذي يثبت صدقه يأخذ وزناً في القرار، والمصدر العكسي يُقرأ بالعكس، والذي لا يتنبأ يُتجاهل. أنت لا تحتاج أن تفهم التفاصيل — الوكيل يقرر.');
+ $('smart').innerHTML=h;
+ $('whalek').innerHTML=`<div class="reasons">${sm.whale_pro?'🟢 مفتاح Whale Alert مفعّل — الوكيل يرى تحويلات الحيتان المعروفة على البلوكشين':'⚪ غير مفعّل — الوكيل يستخدم صفقات الحيتان على Binance (مجاني)'}</div>
+ <div style="display:flex;gap:6px;margin-top:6px"><input id="wk" placeholder="مفتاح Whale Alert API" style="margin:0;font-size:13px;padding:9px" dir="ltr"><button onclick="mt('whale_key',{key:$('wk').value})">حفظ</button></div>`+info('اختياري ومدفوع (اشتراك من whale-alert.io). يضيف رؤية أعمق: تحويلات محافظ معروفة الهوية (منصات، صناديق) من وإلى المنصات. بدونه يعمل الرادار بالمصادر المجانية.')}
 function renderExplorer(x){if(!x)return;
  const k=(l,v,c='')=>`<div class="kpi"><small>${l}</small><b class="num ${c}">${v}</b></div>`;
  let h=`<div class="grid">${k('صفقات مغلقة',x.trades)}${k('مفتوحة الآن',x.open+'/'+x.max_pos)}${k('نسبة الربح',f2(x.winrate*100,0)+'%')}${k('متوسط الصفقة',f2(x.avg_r)+'R',x.avg_r>=0?'up':'dn')}</div>

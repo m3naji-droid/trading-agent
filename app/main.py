@@ -239,6 +239,10 @@ async def maint(req: Request):
         ok = await asyncio.to_thread(maintenance.ping) if body.get("url") else False
         memory.log_event("🩺 تم ربط المراقب الخارجي" if ok else "🩺 حُفظ رابط المراقب (لم تنجح النبضة الأولى)")
         return {"ok": ok}
+    if a == "whale_key":
+        memory.kv_set("whale_key", (body.get("key") or "").strip())
+        memory.log_event("🐋 تم حفظ مفتاح Whale Alert" if body.get("key") else "🐋 أُزيل مفتاح Whale Alert")
+        return {"ok": True}
     if a == "hc_test":
         return {"ok": await asyncio.to_thread(maintenance.ping)}
     if a == "backup_now":
