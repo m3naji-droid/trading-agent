@@ -26,6 +26,7 @@ from .ghosts import Ghosts
 from .radar import WhaleRadar
 from .explorer import Explorer
 from .onchain import OnChain
+from . import exits
 from .orderflow import LiquidationTracker, snapshot
 from .learner import Learner, simulate_trade
 from .risk import RiskManager
@@ -37,7 +38,8 @@ REPORT_HOUR_UTC = 5  # 8 صباحاً بتوقيت البحرين
 log = logging.getLogger("agent")
 CANDLE = 900          # إطار شموع الدخول (15 دقيقة)
 FRESH_WINDOW = 150    # يُسمح بالدخول فقط خلال أول دقيقتين ونصف بعد إغلاق الشمعة
-EXIT_AR = {"exchange_target": "هدف المنصة", "stop": "وقف الخسارة", "trailing": "الوقف المتحرك", "target": "الهدف", "timeout": "انتهاء المدة",
+EXIT_AR = {"guard": "حارس الأرباح", "giveback": "قاعدة إرجاع الربح", "breakeven": "وقف التعادل بعد ربح جزئي",
+           "exchange_target": "هدف المنصة", "stop": "وقف الخسارة", "trailing": "الوقف المتحرك", "target": "الهدف", "timeout": "انتهاء المدة",
            "kill": "مفتاح الطوارئ", "regime": "تغيّر حالة السوق", "exchange_stop": "وقف المنصة"}
 
 
@@ -75,6 +77,7 @@ class Agent:
         self.liq.on_event = self.radar.add_liquidation
         self.radar.on_tick = self.on_tick
         self._busy = set()
+        self._lastbars = {}  # sym -> آخر شمعتين مغلقتين (لحارس الأرباح)
         self.ticks = {"n": 0, "actions": 0, "last": 0.0}
         self._blackout_key = None
         self._btc15 = None
@@ -240,7 +243,7 @@ class Agent:
         await self.manage_positions()
         await self.decide([c for r in results for c in r])
         self.ghosts.tick(self.prices, self.prices.get("BTC/USDT"))
-        self.explorer.tick_all(self.prices)
+        self.explorer.tick_all(self.prices, self._lastbars)
         for ev in self.darwin.pop_events():
             ch = "، ".join(f"{GENE_AR[k]} {ev['old'][k]}→{ev['new'][k]}" for k in ev["new"] if ev["new"][k] != ev["old"][k])
             memory.log_event(f"🧬 داروين: ترقية جيل {ev['generation']} لـ«{STRATEGY_AR[ev['strategy']]}» "
@@ -276,6 +279,7 @@ class Agent:
             reg = detect_regime(e1)
             ctx = {"df": e15, "htf": e1, "ttf": h4, "regime": reg, "smc": smc_mod.analyze(e15), "flow": None,
                    "base": base, "liq": liq}
+            self._lastbars[sym] = e15.iloc[-2:].copy()
             strict = run_all(ctx)
             got = {x.strategy for x in strict}
             near = [x for x in run_all({**ctx, "relax": True}) if x.strategy not in got]
@@ -594,7 +598,8 @@ class Agent:
         paper = self.mode == "paper"  # في المحاكاة: التنفيذ عند مستوى الأمر كما يحدث على المنصة
         if hit_stop:
             moved = abs(pos["stop"] - pos["init_stop"]) > 1e-12
-            await self._close(pos, pos["stop"] if paper else p, "trailing" if moved else "stop")
+            why = "breakeven" if pos.get("partial") and abs(pos["stop"] - pos["entry"]) < 1e-12 else "trailing" if moved else "stop"
+            await self._close(pos, pos["stop"] if paper else p, why)
             return
         if hit_tgt:
             await self._close(pos, pos["target"] if paper else p, "target")
@@ -603,7 +608,11 @@ class Agent:
         atr = pos["atr"]
         pos["best"] = max(pos["best"], p) if long else min(pos["best"], p)
         gain = (pos["best"] - pos["entry"]) if long else (pos["entry"] - pos["best"])
-        g = pos.get("genome") or {"trail": 1.5, "be": 1.0}
+        g = {**{"trail": 1.5, "be": 1.0, "pg": 2.0, "pg_sig": 2.0, "tp1": 2.0, "gb": 1.0}, **(pos.get("genome") or {})}
+        # 💰 جني ربح جزئي (لحظي)
+        if exits.tp1_on(g) and not pos.get("partial") and risk and ((p - pos["entry"]) if long else (pos["entry"] - p)) >= g["tp1"] * risk:
+            if await self._partial(pos, p, g["tp1"]):
+                return
         if gain >= g["be"] * risk:  # وقف متحرك وفق جينات داروين
             trail = g["trail"] * atr * (0.67 if gain >= 2 * risk else 1.0)
             ns = max(pos["entry"], pos["best"] - trail) if long else min(pos["entry"], pos["best"] + trail)
@@ -614,6 +623,30 @@ class Agent:
                 await self.broker.update_stop(pos, ns)
         if not full:
             return
+        # 🛡️ حارس الأرباح + 📉 قاعدة إرجاع الربح: تُفحص مرة لكل شمعة 15د مغلقة
+        bars = self._lastbars.get(pos["symbol"])
+        if bars is not None and len(bars) >= 2 and risk and bars["ts"].iloc[-1] != pos.get("_bar_ts"):
+            pos["_bar_ts"] = int(bars["ts"].iloc[-1])
+            bar, prev = bars.iloc[-1], bars.iloc[-2]
+            d = 1 if long else -1
+            r_close = (bar["close"] - pos["entry"]) * d / risk
+            peak = gain / risk
+            if exits.gb_on(g) and peak >= exits.GB_ARM_R and r_close < peak * (1 - g["gb"]):
+                memory.log_event(f"📉 {pos['symbol']}: أعادت الصفقة أكثر من {g['gb']:.0%} من أعلى ربح "
+                                 f"(+{peak:.2f}R ← {r_close:+.2f}R) — إغلاق لحماية الباقي", "trade")
+                await self._close(pos, p, "giveback")
+                return
+            if exits.pg_on(g) and peak >= g["pg"] and r_close > exits.PG_FLOOR:
+                try:
+                    flow = await snapshot(self.spot, self.fut, pos["symbol"], p, self.liq)
+                except Exception:
+                    flow = None
+                n, why = exits.warnings(bar, prev, pos["side"], flow)
+                if n >= int(round(g["pg_sig"])):
+                    memory.log_event(f"🛡️ حارس الأرباح أغلق {pos['symbol']} بعد بلوغ +{peak:.2f}R: "
+                                     f"{'، '.join(why)}", "trade")
+                    await self._close(pos, p, "guard")
+                    return
         # خروج زمني ذكي: 3 أيام بدون تقدم
         r_now = ((p - pos["entry"]) if long else (pos["entry"] - p)) / risk if risk else 0
         if time.time() - pos["opened"] > 72 * 3600 and r_now < 0.5:
@@ -622,6 +655,27 @@ class Agent:
         reg = self.analysis.get(pos["symbol"], {}).get("regime")
         if (long and reg == TREND_DOWN or not long and reg == TREND_UP or reg == HIGH_RISK) and r_now > 0.3:
             await self._close(pos, p, "regime")
+
+    async def _partial(self, pos, price, tp1):
+        """يغلق نصف الصفقة عند +tp1 R، وينقل وقف الباقي لسعر الدخول."""
+        try:
+            res = await self.broker.close_partial(pos, price, exits.PARTIAL)
+        except Exception as e:
+            memory.log_event(f"⚠️ تعذر جني الربح الجزئي في {pos['symbol']}: {e}", "warn")
+            pos["partial"] = True  # لا تكرار
+            return False
+        pos["partial"] = True
+        if not res:
+            return False
+        fill, pnl = res
+        pos["realized"] = pos.get("realized", 0.0) + pnl
+        be = max(pos["stop"], pos["entry"]) if pos["side"] == "long" else min(pos["stop"], pos["entry"])
+        await self.broker.update_stop(pos, be)
+        memory.log_event(f"💰 جني ربح جزئي: أُغلق نصف {pos['symbol']} عند +{tp1:.2f}R ({pnl:+.2f}$) — "
+                         f"الباقي يجري نحو الهدف بوقف عند سعر الدخول", "trade")
+        notify.send(f"💰 ربح جزئي {pos['symbol'].split('/')[0]}: {pnl:+.2f}$",
+                    "أُغلق نصف الصفقة، والنصف الآخر مستمر بلا خسارة نحو الهدف.", tags=["moneybag"])
+        return False  # تستمر إدارة الباقي
 
     async def _close(self, pos, price, reason):
         if pos["id"] not in self.broker.positions:
@@ -644,6 +698,7 @@ class Agent:
                            "opened": p["opened"], "closed": time.time(), "mode": self.mode, "shadow": 1})
 
     def _on_closed(self, pos, fill, pnl, reason):
+        pnl += pos.get("realized", 0.0)  # + الربح الجزئي المحقق سابقاً
         r = pnl / pos["risk_usd"] if pos.get("risk_usd") else 0
         memory.save_trade(pos | {"stop": pos.get("init_stop", pos["stop"]), "exit": fill, "pnl": pnl, "r_mult": r, "exit_reason": reason,
                                  "closed": time.time(), "mode": self.mode, "shadow": 0})

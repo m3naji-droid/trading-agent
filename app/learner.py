@@ -17,6 +17,7 @@ from .regime import detect_regime
 from . import smc as smc_mod
 from .strategies import run_all, features, STRATEGIES
 from .config import settings
+from . import exits
 
 log = logging.getLogger("learner")
 DECAY = 0.997       # نسيان تدريجي => تعلم سريع من الأحدث
@@ -86,16 +87,17 @@ class Learner:
 
 
 # ------------------------------------------------------------------ محاكاة صفقة
-DEFAULT_GENOME = {"stop": 1.0, "rr": 1.0, "trail": 1.5, "be": 1.0}
+DEFAULT_GENOME = {"stop": 1.0, "rr": 1.0, "trail": 1.5, "be": 1.0, "pg": 2.0, "pg_sig": 2.0, "tp1": 2.0, "gb": 1.0}
 
 
 def simulate_trade(sig, future: pd.DataFrame, atr: float, max_bars=48, fee=None, genome=None):
     """
     يحاكي صفقة على الشموع اللاحقة وفق "جينات" الإدارة (داروين):
-    مسافة الوقف × stop، الهدف × rr، يبدأ التتبع عند be×R بمسافة trail×ATR (تضيق بعد +2R).
+    مسافة الوقف × stop، الهدف × rr، يبدأ التتبع عند be×R بمسافة trail×ATR (تضيق بعد +2R)،
+    + أدوات حماية الأرباح: حارس الأرباح (pg/pg_sig)، ربح جزئي (tp1)، قاعدة إرجاع الربح (gb).
     يرجع (R-multiple صافي, سبب الخروج, سعر الخروج, عدد الشموع).
     """
-    g = genome or DEFAULT_GENOME
+    g = dict(DEFAULT_GENOME, **(genome or {}))
     fee = settings.fee_rate if fee is None else fee
     e = sig.entry
     risk0 = abs(e - sig.stop)
@@ -108,10 +110,16 @@ def simulate_trade(sig, future: pd.DataFrame, atr: float, max_bars=48, fee=None,
     stop0 = e - d * risk
     stop = stop0
     target = e + d * risk * rr0 * g["rr"]
-    H = future["high"].values[:max_bars]
-    L = future["low"].values[:max_bars]
-    C = future["close"].values[:max_bars]
+    fut = future.iloc[:max_bars]
+    H, L, C = fut["high"].values, fut["low"].values, fut["close"].values
+    use_pg = exits.pg_on(g) and all(c in fut.columns for c in ("open", "ema20", "rsi", "vol_z", "atr"))
+    use_tp1, use_gb = exits.tp1_on(g), exits.gb_on(g)
+    if use_pg:
+        O, E20, RS, VZ, AT = (fut[c].values for c in ("open", "ema20", "rsi", "vol_z", "atr"))
+    need_sig = int(round(g["pg_sig"]))
     best = e
+    frac, realized, partial = 1.0, 0.0, False
+    peak_r = 0.0
     why = None
     for i in range(len(H)):
         h, l = H[i], L[i]
@@ -122,8 +130,6 @@ def simulate_trade(sig, future: pd.DataFrame, atr: float, max_bars=48, fee=None,
             if h >= target:
                 px, why = target, "target"
                 break
-            best = max(best, h)
-            gain = best - e
         else:
             if h >= stop:
                 px, why = stop, "stop"
@@ -131,20 +137,35 @@ def simulate_trade(sig, future: pd.DataFrame, atr: float, max_bars=48, fee=None,
             if l <= target:
                 px, why = target, "target"
                 break
-            best = min(best, l)
-            gain = e - best
+        if use_tp1 and not partial and (h - e if long else e - l) >= g["tp1"] * risk:
+            realized += exits.PARTIAL * g["tp1"] * risk  # نصف الصفقة أُغلق عند +tp1 R
+            frac -= exits.PARTIAL
+            partial = True
+            stop = max(stop, e) if long else min(stop, e)  # الباقي بلا خسارة
+        best = max(best, h) if long else min(best, l)
+        gain = (best - e) * d
         if gain >= g["be"] * risk:
             trail = g["trail"] * atr * (0.67 if gain >= 2 * risk else 1.0)
-            if long:
-                stop = max(stop, e, best - trail)
-            else:
-                stop = min(stop, e, best + trail)
+            stop = max(stop, e, best - trail) if long else min(stop, e, best + trail)
+        c = C[i]
+        r_close = (c - e) * d / risk
+        peak_r = max(peak_r, gain / risk)
+        if use_gb and peak_r >= exits.GB_ARM_R and r_close < peak_r * (1 - g["gb"]):
+            px, why = c, "giveback"
+            break
+        if use_pg and peak_r >= g["pg"] and r_close > exits.PG_FLOOR and i >= 1:
+            bar = {"open": O[i], "close": c, "high": h, "low": l, "ema20": E20[i], "rsi": RS[i], "vol_z": VZ[i],
+                   "atr": AT[i]}
+            n, _ = exits.warnings(bar, {"rsi": RS[i - 1]}, sig.side)
+            if n >= need_sig:
+                px, why = c, "guard"
+                break
     if why is None:
         i = len(H) - 1
         px, why = C[i], "timeout"
-    gross = d * (px - e)
+    gross = realized + frac * d * (px - e)
     if why == "stop" and abs(stop - stop0) > 1e-12:
-        why = "trailing"
+        why = "breakeven" if partial and abs(stop - e) < 1e-12 else "trailing"
     return float((gross - 2 * fee * e) / risk), why, float(px), i + 1
 
 

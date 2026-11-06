@@ -68,9 +68,18 @@ def kv_get(k, default=None):
         return json.loads(r["v"]) if r else default
 
 
+def _jsonable(o):
+    """أنواع numpy وغيرها => أنواع JSON عادية (حتى لا يفشل الحفظ أبداً)."""
+    if hasattr(o, "item"):
+        return o.item()
+    if isinstance(o, (set, tuple)):
+        return list(o)
+    return str(o)
+
+
 def kv_set(k, v):
     with _lock, _conn() as c:
-        c.execute("INSERT OR REPLACE INTO kv(k,v) VALUES(?,?)", (k, json.dumps(v)))
+        c.execute("INSERT OR REPLACE INTO kv(k,v) VALUES(?,?)", (k, json.dumps(v, default=_jsonable)))
 
 
 def record_equity(value, btc=None, mode=None):

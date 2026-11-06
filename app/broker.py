@@ -61,6 +61,18 @@ class PaperBroker:
         pos["stop"] = new_stop
         self._save()
 
+    async def close_partial(self, pos, price, frac):
+        """جني ربح جزئي: يغلق نسبة frac من الكمية. يرجع (سعر التنفيذ, الربح المحقق) أو None."""
+        d = 1 if pos["side"] == "long" else -1
+        fill = price * (1 - d * SLIPPAGE)
+        q = pos["qty"] * frac
+        pnl = (fill - pos["entry"]) * q * d - q * fill * settings.fee_rate
+        self.balance += pnl
+        pos["qty"] -= q
+        pos["notional"] = pos["qty"] * pos["entry"]
+        self._save()
+        return fill, pnl
+
     async def close(self, pos, price, reason):
         d = 1 if pos["side"] == "long" else -1
         fill = price * (1 - d * SLIPPAGE)
@@ -236,6 +248,34 @@ class LiveBroker(PaperBroker):
         except Exception as e:
             log.warning(f"تحديث الوقف: {e}")
         self._save()
+
+    async def close_partial(self, pos, price, frac):
+        ex, sym = self._ex(pos)
+        q = float(ex.amount_to_precision(sym, pos["qty"] * frac))
+        rest = pos["qty"] - q
+        mc = self.min_cost(pos["symbol"], pos["market"])
+        if q * price < mc or rest * price < mc:
+            return None  # الحجم صغير جداً للتقسيم على المنصة
+        await self._cancel_stop(pos)  # في Spot الرصيد محجوز لأمر الوقف — يُلغى أولاً
+        await self._cancel_tp(pos)
+        side = "sell" if pos["side"] == "long" else "buy"
+        params = {"reduceOnly": True} if pos["market"] == "futures" else {}
+        try:
+            o = await ex.create_order(sym, "market", side, q, None, params)
+            fill = float(o.get("average") or price)
+            q = float(o.get("filled") or q)
+            pos["qty"] -= q
+        finally:  # مهما حدث: أعد وضع الوقف والهدف على الكمية المتبقية
+            try:
+                await self._place_stop(pos)
+                await self._place_tp(pos)
+            except Exception as e:
+                log.warning(f"re-place orders after partial: {e}")
+        d = 1 if pos["side"] == "long" else -1
+        pnl = (fill - pos["entry"]) * q * d - q * fill * settings.fee_rate
+        pos["notional"] = pos["qty"] * pos["entry"]
+        self._save()
+        return fill, pnl
 
     async def close(self, pos, price, reason):
         ex, sym = self._ex(pos)

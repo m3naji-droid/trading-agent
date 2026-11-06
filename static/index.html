@@ -253,7 +253,7 @@ function modeDlg(){const m=prompt('اكتب الوضع الجديد:\npaper = م
 
 function go(t){document.querySelectorAll('nav a,.tab').forEach(x=>x.classList.remove('act'));document.querySelector(`nav a[data-t="${t}"]`).classList.add('act');$('t-'+t).classList.add('act');scrollTo(0,0);if(t==='mkt'){initChart();loadChart();radarOn()}else radarOff();if(t==='perf')setTimeout(()=>gChart&&gChart.applyOptions({width:$('gch').clientWidth}),50);if(t==='home')eqChart&&eqChart.applyOptions({width:$('eq').clientWidth})}
 document.querySelectorAll('nav a').forEach(a=>a.onclick=e=>{e.preventDefault();go(a.dataset.t)});
-const EXIT={exchange_target:'هدف المنصة',stop:'وقف الخسارة',trailing:'الوقف المتحرك',target:'الهدف',timeout:'انتهاء المدة',kill:'مفتاح الطوارئ',regime:'تغيّر حالة السوق',exchange_stop:'وقف المنصة'};
+const EXIT={guard:'🛡️ حارس الأرباح',giveback:'📉 إرجاع الربح',breakeven:'💰 تعادل بعد ربح جزئي',exchange_target:'هدف المنصة',stop:'وقف الخسارة',trailing:'الوقف المتحرك',target:'الهدف',timeout:'انتهاء المدة',kill:'مفتاح الطوارئ',regime:'تغيّر حالة السوق',exchange_stop:'وقف المنصة'};
 let mChart,mSeries;
 async function openTrade(id){$('modal').style.display='flex';$('mt').textContent='جارٍ التحميل…';$('mbody').innerHTML='';
  try{const d=await api('/api/trade/'+encodeURIComponent(id)),t=d.trade;
@@ -337,7 +337,7 @@ function render(s){S=s;if(s.strategy_names)Object.assign(STR,s.strategy_names);t
  $('trs').innerHTML=s.trades.length?s.trades.map(t=>`<div class="row click" onclick="openTrade('${t.id}')"><div><b>${t.symbol}</b> <span class="tag ${t.side[0]}">${SIDE[t.side]}</span><div class="reasons">${STR[t.strategy]} · ${EXIT[t.exit_reason]||''} · ${new Date(t.closed*1000).toLocaleString('ar')} ›</div></div><b class="num ${t.pnl>=0?'up':'dn'}">${t.pnl>=0?'+':''}${f2(t.pnl)}$</b></div>`).join(''):'<p class="mut">لا صفقات مغلقة بعد</p>';
  $('evs').innerHTML=s.events.map(e=>`<div class="ev ${e.level}"><time class="num">${new Date(e.ts*1000).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})}</time>${e.msg}</div>`).join('');
 }
-const GENE={stop:'مسافة الوقف',rr:'بُعد الهدف',trail:'الوقف المتحرك',be:'بدء التتبع',vz:'أقل حجم',adx:'أقل قوة اتجاه',rsi:'أقصى تمدد RSI',minrr:'أقل عائد/مخاطرة'};
+const GENE={pg:'حارس الأرباح من',pg_sig:'علامات الانعكاس',tp1:'ربح جزئي عند',gb:'أقصى إرجاع للربح',stop:'مسافة الوقف',rr:'بُعد الهدف',trail:'الوقف المتحرك',be:'بدء التتبع',vz:'أقل حجم',adx:'أقل قوة اتجاه',rsi:'أقصى تمدد RSI',minrr:'أقل عائد/مخاطرة'};
 const ago=t=>{const m=Math.round((Date.now()/1000-t)/60);return m<1?'الآن':m<60?`قبل ${m} د`:m<1440?`قبل ${Math.round(m/60)} س`:`قبل ${Math.round(m/1440)} ي`};
 const usd=x=>x>=1e6?'$'+f2(x/1e6,1)+'M':'$'+f2(x/1e3,0)+'K';
 function fngColor(v){return v<25?'#f05a5a':v<45?'#f2a54b':v<55?'#8b98a7':v<75?'#8fd17a':'#21c08b'}
@@ -432,12 +432,21 @@ function renderExplorer(x){if(!x)return;
  h+='<p class="reasons" style="margin-top:8px">🧭 وكيل تعليمي بمحفظة وهمية ($1000) — <b>لا يلمس المال الحقيقي أبداً</b>. يدخل كل الفرص حتى التي رفضها المجلس أو البوابة، والفرص القريبة أيضاً، حتى 25 صفقة معاً. ما يتعلمه يذهب للوكيل الرئيسي (ذاكرة الأنماط، ثقة الاستراتيجيات، وأدلة اعتمادها)، بينما يبقى الوكيل الرئيسي منضبطاً لتبقى نتائجه دليلاً صادقاً على الجاهزية.</p>';
  $('explorer').innerHTML=h}
 function renderDarwin(d){if(!d)return;const st=Object.entries(d.strategies);
- $('darwin').innerHTML=st.map(([k,v])=>{const c=v.champion,bc=v.challengers[0];
+ const cnt=(f)=>st.filter(([k,v])=>f(v.champion.genes)).length;
+ const prot=`<div class="ev" style="margin-bottom:6px"><b>🛡️ حماية الأرباح — ماذا اختار داروين؟</b><div class="reasons">
+  حارس الأرباح مفعّل في <b class="num">${cnt(g=>g.pg<1.95)}</b> · جني ربح جزئي في <b class="num">${cnt(g=>g.tp1<1.95)}</b> · قاعدة إرجاع الربح في <b class="num">${cnt(g=>g.gb<0.95)}</b> من <span class="num">${st.length}</span> استراتيجية<br>
+  تُختبر الأدوات الثلاث على كل فرصة مقارنةً بعدم استخدامها، وتُفعَّل لاستراتيجية فقط إذا رفعت ربحها الإجمالي فعلاً.</div></div>`;
+ $('darwin').innerHTML=prot+st.map(([k,v])=>{const c=v.champion,bc=v.challengers[0];
   const gl=(keys)=>(keys||Object.keys(c.genes)).map(g=>{const x=c.genes[g],df=d.default[g],same=Math.abs(x-df)<0.005,ch=x>df+0.005?'↑':x<df-0.005?'↓':'';
-   const free=same&&['vz','adx','rsi'].includes(g);return `<span class="gene">${GENE[g]} <b class="num">${free?'بلا حد':x}</b>${ch?` <span class="mut">${ch}</span>`:''}</span>`}).join('');
-  const genes=`<div class="reasons" style="margin:2px 0">إدارة الصفقة:</div>${gl(d.exit_genes)}<div class="reasons" style="margin:4px 0 2px">شروط الدخول:</div>${gl(d.entry_genes)}${c.take!=null&&c.take<0.995?`<div class="reasons">يقبل <span class="num">${f2(c.take*100,0)}%</span> من الفرص</div>`:''}`;
+   const free=same&&['vz','adx','rsi'].includes(g);
+   const off=(g==='pg'&&x>=1.95)||(g==='tp1'&&x>=1.95)||(g==='gb'&&x>=0.95);
+   if(g==='pg_sig'&&c.genes.pg>=1.95)return '';
+   const val=off?'مطفأ':g==='pg'||g==='tp1'?'+'+x+'R':g==='gb'?Math.round(x*100)+'%':g==='pg_sig'?Math.round(x):x;
+   return `<span class="gene">${GENE[g]} <b class="num">${free?'بلا حد':val}</b>${ch&&!off?` <span class="mut">${ch}</span>`:''}</span>`}).join('');
+  const genes=`<div class="reasons" style="margin:2px 0">إدارة الصفقة:</div>${gl(d.exit_genes)}<div class="reasons" style="margin:4px 0 2px">شروط الدخول:</div>${gl(d.entry_genes)}<div class="reasons" style="margin:4px 0 2px">حماية الأرباح:</div>${gl(d.protect_genes)}${c.take!=null&&c.take<0.995?`<div class="reasons">يقبل <span class="num">${f2(c.take*100,0)}%</span> من الفرص</div>`:''}`;
   const open=DW_OPEN.has(k)?' open':'';
-  return `<details class="ev dw"${open} ontoggle="this.open?DW_OPEN.add('${k}'):DW_OPEN.delete('${k}')"><summary><b>${STR[k]}</b><span><span class="num ${c.avg_r>=0?'up':'dn'}">${f2(c.avg_r)}R</span> <span class="chip">الجيل ${v.generation}</span></span></summary><div style="margin:4px 0">${genes}</div><div class="reasons">البطل: متوسط <span class="num">${f2(c.avg_r)}R</span> على <span class="num">${c.samples}</span> اختبار${bc?` · أقوى منافس: <span class="num">${f2(bc.avg_r)}R</span> (${bc.samples}/${d.min_samples})`:''}</div></details>`}).join('')
+  const tools=[c.genes.pg<1.95?'🛡️':'',c.genes.tp1<1.95?'💰':'',c.genes.gb<0.95?'📉':''].join('');
+  return `<details class="ev dw"${open} ontoggle="this.open?DW_OPEN.add('${k}'):DW_OPEN.delete('${k}')"><summary><b>${STR[k]}</b><span>${tools?`<span title="أدوات حماية الأرباح المفعلة">${tools}</span> `:''}<span class="num ${c.avg_r>=0?'up':'dn'}">${f2(c.avg_r)}R</span> <span class="chip">الجيل ${v.generation}</span></span></summary><div style="margin:4px 0">${genes}</div><div class="reasons">البطل: متوسط <span class="num">${f2(c.avg_r)}R</span> على <span class="num">${c.samples}</span> اختبار${bc?` · أقوى منافس: <span class="num">${f2(bc.avg_r)}R</span> (${bc.samples}/${d.min_samples})`:''}</div></details>`}).join('')
  +(d.history&&d.history.length?`<h2 style="margin-top:12px">آخر الترقيات</h2>`+d.history.slice(0,5).map(h=>`<div class="ev learn">🧬 ${STR[h.strategy]} → الجيل ${h.generation} <span class="num">(${f2(h.old_r)}R → ${f2(h.new_r)}R)</span><div class="reasons">${ago(h.ts)}</div></div>`).join(''):'')
  +'<p class="reasons" style="margin-top:8px">كل استراتيجية لها "بطل" و5 منافسين بجينات معدّلة، يُختبرون جميعاً على نفس الفرص. يُرقّى المنافس فقط بعد 40 اختباراً وتفوق واضح، وبحد أقصى ترقية واحدة يومياً.</p>'}
 

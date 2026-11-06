@@ -15,6 +15,7 @@ import uuid
 
 from . import memory
 from .config import settings
+from . import exits
 
 START = 1000.0
 RISK = 0.005          # 0.5% من المحفظة الوهمية لكل صفقة
@@ -79,14 +80,14 @@ class Explorer:
             if p["symbol"] == sym:
                 self._manage(pid, p, price)
 
-    def tick_all(self, prices):
+    def tick_all(self, prices, lastbars=None):
         for pid, p in list(self.positions.items()):
             px = prices.get(p["symbol"])
             if px:
-                self._manage(pid, p, px, full=True)
+                self._manage(pid, p, px, full=True, bars=(lastbars or {}).get(p["symbol"]))
         self.save()
 
-    def _manage(self, pid, p, px, full=False):
+    def _manage(self, pid, p, px, full=False, bars=None):
         long = p["side"] == "long"
         if (px <= p["stop"]) if long else (px >= p["stop"]):
             moved = abs(p["stop"] - p["init_stop"]) > 1e-12
@@ -94,15 +95,37 @@ class Explorer:
         if (px >= p["target"]) if long else (px <= p["target"]):
             return self._close(pid, p["target"], "target")
         risk = abs(p["entry"] - p["init_stop"])
+        g = {**{"pg": 2.0, "pg_sig": 2.0, "tp1": 2.0, "gb": 1.0}, **p["genome"]}
+        d = 1 if long else -1
+        if exits.tp1_on(g) and not p.get("partial") and (px - p["entry"]) * d >= g["tp1"] * risk:
+            q = p["qty"] * exits.PARTIAL
+            fill = px * (1 - d * SLIP)
+            pnl = (fill - p["entry"]) * q * d - q * fill * settings.fee_rate
+            self.balance += pnl
+            p["qty"] -= q
+            p["realized"] = p.get("realized", 0.0) + pnl
+            p["partial"] = True
+            p["stop"] = max(p["stop"], p["entry"]) if long else min(p["stop"], p["entry"])
+            self._dirty = True
         p["best"] = max(p["best"], px) if long else min(p["best"], px)
         gain = (p["best"] - p["entry"]) if long else (p["entry"] - p["best"])
-        g = p["genome"]
         if gain >= g["be"] * risk:
             trail = g["trail"] * p["atr"] * (0.67 if gain >= 2 * risk else 1.0)
             ns = max(p["stop"], p["entry"], p["best"] - trail) if long else min(p["stop"], p["entry"], p["best"] + trail)
             if ns != p["stop"]:
                 p["stop"] = ns
                 self._dirty = True
+        if full and bars is not None and len(bars) >= 2 and risk and bars["ts"].iloc[-1] != p.get("_bar_ts"):
+            p["_bar_ts"] = int(bars["ts"].iloc[-1])
+            bar, prev = bars.iloc[-1], bars.iloc[-2]
+            r_close = (bar["close"] - p["entry"]) * d / risk
+            peak = gain / risk
+            if exits.gb_on(g) and peak >= exits.GB_ARM_R and r_close < peak * (1 - g["gb"]):
+                return self._close(pid, px, "giveback")
+            if exits.pg_on(g) and peak >= g["pg"] and r_close > exits.PG_FLOOR:
+                n, _ = exits.warnings(bar, prev, p["side"])
+                if n >= int(round(g["pg_sig"])):
+                    return self._close(pid, px, "guard")
         if full and time.time() - p["opened"] > MAX_HOURS * 3600:
             self._close(pid, px, "timeout")
 
@@ -115,7 +138,9 @@ class Explorer:
         fee = p["qty"] * fill * settings.fee_rate
         pnl = (fill - p["entry"]) * p["qty"] * d - fee
         self.balance += pnl
-        net = pnl - p["fees"]
+        net = pnl - p["fees"] + p.get("realized", 0.0)
+        if reason == "stop" and p.get("partial") and abs(p["stop"] - p["entry"]) < 1e-12:
+            reason = "breakeven"
         r = net / p["risk_usd"] if p["risk_usd"] else 0.0
         s = self.stats.setdefault(p["strategy"], {"n": 0, "wins": 0, "r": 0.0, "near_n": 0, "near_r": 0.0})
         if p["near"]:

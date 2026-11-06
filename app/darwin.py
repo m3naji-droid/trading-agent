@@ -26,12 +26,18 @@ import time
 
 from . import memory
 
-DEFAULT = {"stop": 1.0, "rr": 1.0, "trail": 1.5, "be": 1.0, "vz": -3.0, "adx": 0.0, "rsi": 100.0, "minrr": 1.2}
+DEFAULT = {"stop": 1.0, "rr": 1.0, "trail": 1.5, "be": 1.0, "vz": -3.0, "adx": 0.0, "rsi": 100.0, "minrr": 1.2,
+           "pg": 2.0, "pg_sig": 2.0, "tp1": 2.0, "gb": 1.0}
 BOUNDS = {"stop": (0.7, 1.6), "rr": (0.6, 1.8), "trail": (0.8, 3.0), "be": (0.5, 1.8),
-          "vz": (-3.0, 2.0), "adx": (0.0, 35.0), "rsi": (55.0, 100.0), "minrr": (1.2, 3.0)}
+          "vz": (-3.0, 2.0), "adx": (0.0, 35.0), "rsi": (55.0, 100.0), "minrr": (1.2, 3.0),
+          "pg": (0.3, 2.0), "pg_sig": (1.0, 3.0), "tp1": (0.5, 2.0), "gb": (0.3, 1.0)}
 GENE_AR = {"stop": "مسافة الوقف", "rr": "بُعد الهدف", "trail": "الوقف المتحرك", "be": "بدء التتبع",
-           "vz": "أقل حجم", "adx": "أقل قوة اتجاه", "rsi": "أقصى تمدد RSI", "minrr": "أقل عائد/مخاطرة"}
+           "vz": "أقل حجم", "adx": "أقل قوة اتجاه", "rsi": "أقصى تمدد RSI", "minrr": "أقل عائد/مخاطرة",
+           "pg": "حارس الأرباح من", "pg_sig": "علامات الانعكاس", "tp1": "ربح جزئي عند", "gb": "أقصى إرجاع للربح"}
 EXIT_GENES = ("stop", "rr", "trail", "be")
+PROTECT_GENES = ("pg", "pg_sig", "tp1", "gb")
+# بذور أولية لاختبار أدوات حماية الأرباح فوراً (تُزرع في المنافسين عند الترقية)
+PROTECT_SEEDS = [{"pg": 0.6, "pg_sig": 2.0}, {"tp1": 1.0}, {"gb": 0.5}]
 ENTRY_GENES = ("vz", "adx", "rsi", "minrr")
 MIN_TAKE = 0.3
 
@@ -70,16 +76,23 @@ class Darwin:
         self.lock = threading.RLock()
         self.state = memory.kv_get("darwin", {}) or {}
         self.history = memory.kv_get("darwin_history", []) or []
-        for st in self.state.values():  # ترقية الحالة القديمة: إضافة جينات الدخول
+        for st in self.state.values():  # ترقية الحالة القديمة: إضافة الجينات الجديدة
+            protect_new = "pg" not in st["champion"]["genes"]
             for g in [st["champion"]] + st["challengers"]:
                 for k, v in DEFAULT.items():
                     g["genes"].setdefault(k, v)
                 g.setdefault("t", g.get("n", 0.0))
+            if protect_new:  # زرع منافسين يجربون أدوات حماية الأرباح
+                st["challengers"].sort(key=lambda c: c["raw_n"])
+                for i, seed in enumerate(PROTECT_SEEDS):
+                    if i < len(st["challengers"]):
+                        st["challengers"][i] = _new({**st["champion"]["genes"], **seed}, st["generation"] + 1)
         for s in strategies:
             if s not in self.state:
                 champ = _new(dict(DEFAULT), 0)
-                self.state[s] = {"champion": champ, "generation": 0, "last_promo": 0,
-                                 "challengers": [_new(mutate(DEFAULT, 0.25), 1) for _ in range(N_CHALLENGERS)]}
+                ch = [_new({**DEFAULT, **seed}, 1) for seed in PROTECT_SEEDS]
+                ch += [_new(mutate(DEFAULT, 0.25), 1) for _ in range(N_CHALLENGERS - len(ch))]
+                self.state[s] = {"champion": champ, "generation": 0, "last_promo": 0, "challengers": ch}
         self.events = []  # رسائل للوكيل (ترقيات)
         self._dirty = 0
 
@@ -188,5 +201,5 @@ class Darwin:
                                           key=lambda x: -x["avg_r"]),
                 }
             return {"strategies": out, "history": self.history[:10], "default": DEFAULT, "bounds": BOUNDS,
-                    "exit_genes": EXIT_GENES, "entry_genes": ENTRY_GENES,
+                    "exit_genes": EXIT_GENES, "entry_genes": ENTRY_GENES, "protect_genes": PROTECT_GENES,
                     "min_samples": MIN_SAMPLES}
