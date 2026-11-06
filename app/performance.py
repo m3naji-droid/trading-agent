@@ -102,6 +102,7 @@ def summary(mode: str) -> dict:
         "monthly": [{"k": k, "pnl": v} for k, v in sorted(monthly.items())][-6:],
         "readiness": {"status": status, "passed": passed, "total": len(items), "items": items},
         "monte_carlo": monte_carlo(mode),
+        "daily": daily_pnl(mode),
     }
     _cache.update(t=time.time(), mode=mode, v=v)
     return v
@@ -136,6 +137,46 @@ def monte_carlo(mode: str, n_paths=2000, n_trades=100):
             "median": float(np.median(fin)), "p5": float(np.percentile(fin, 5)), "p95": float(np.percentile(fin, 95)),
             "p_loss": float((fin < 0).mean()), "dd_median": float(np.median(dd)), "dd_p95": float(np.percentile(dd, 95)),
             "p_dd10": float((dd > 0.10).mean()), "p_dd20": float((dd > 0.20).mean()), "p_dd30": float((dd > 0.30).mean())}
+
+
+def weekly_report(mode, equity, darwin_history, gate, explorer):
+    since = time.time() - 7 * 86400
+    week = [t for t in memory.real_trades(mode) if t["closed"] >= since]
+    pnl = sum(t["pnl"] or 0 for t in week)
+    wins = sum(1 for t in week if (t["pnl"] or 0) > 0)
+    eq = memory.equity_rows(mode, since_sec=7 * 86400)
+    start = eq[0]["value"] if eq else equity
+    btc = [r for r in eq if r.get("btc")]
+    btc_ret = btc[-1]["btc"] / btc[0]["btc"] - 1 if len(btc) > 1 else 0.0
+    ag_ret = equity / start - 1 if start else 0.0
+    promos = [h for h in darwin_history if h["ts"] >= since]
+    approved = [k for k, g in gate.items() if g.get("status") == "approved"]
+    suspended = [k for k, g in gate.items() if g.get("status") == "suspended"]
+    from .strategies import STRATEGY_AR
+    s = summary(mode)
+    lines = [
+        f"💼 المحفظة: ${equity:,.2f} — الأسبوع {ag_ret:+.2%} مقابل البيتكوين {btc_ret:+.2%}"
+        + (" ✅ تفوّق" if ag_ret > btc_ret else ""),
+        f"📊 {len(week)} صفقة (رابحة {wins}) — صافي {pnl:+.2f}$",
+        f"🛡️ معتمدة للتداول: {len(approved)} استراتيجية" + (f" · معلّقة: {'، '.join(STRATEGY_AR[k] for k in suspended)}" if suspended else ""),
+        f"🧬 ترقيات داروين هذا الأسبوع: {len(promos)}" + (" (" + "، ".join(STRATEGY_AR.get(h['strategy'], h['strategy']) for h in promos[:3]) + ")" if promos else ""),
+        f"🧭 المستكشف: {explorer.get('trades', 0)} صفقة تعليمية إجمالاً، متوسط {explorer.get('avg_r', 0):+.2f}R",
+        f"🎯 الجاهزية للحقيقي: {s['readiness']['passed']}/{s['readiness']['total']}",
+    ]
+    return f"التقرير الأسبوعي — {datetime.now(LOCAL_TZ).strftime('%Y-%m-%d')}", "\n".join(lines)
+
+
+def daily_pnl(mode, days=120):
+    """ربح كل يوم (بتوقيتك) — لتقويم الأرباح."""
+    out = defaultdict(float)
+    cnt = defaultdict(int)
+    cut = time.time() - days * 86400
+    for t in memory.real_trades(mode):
+        if t["closed"] >= cut:
+            d = datetime.fromtimestamp(t["closed"], LOCAL_TZ).strftime("%Y-%m-%d")
+            out[d] += t["pnl"] or 0
+            cnt[d] += 1
+    return [{"d": d, "pnl": out[d], "n": cnt[d]} for d in sorted(out)]
 
 
 def daily_report(mode: str, equity: float, extra: str = "") -> tuple[str, str]:

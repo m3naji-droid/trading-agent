@@ -3,6 +3,7 @@
 المسح → التحليل → التعلم → القرار → التنفيذ → الإدارة → التعلم من النتيجة.
 """
 import asyncio
+import collections
 import gc
 import logging
 import time
@@ -78,6 +79,8 @@ class Agent:
         self.radar.on_tick = self.on_tick
         self._busy = set()
         self._lastbars = {}  # sym -> آخر شمعتين مغلقتين (لحارس الأرباح)
+        self.blocks = collections.deque(maxlen=3000)  # (وقت, سبب) لكل فرصة لم تُنفذ — لبطاقة "لماذا لا يتداول؟"
+        self.last_scan = {"ts": 0, "signals": 0, "coins": 0}
         self.ticks = {"n": 0, "actions": 0, "last": 0.0}
         self._blackout_key = None
         self._btc15 = None
@@ -308,6 +311,7 @@ class Agent:
 
     # ================================================================ القرار
     async def decide(self, cands):
+        self.last_scan = {"ts": time.time(), "signals": len(cands), "coins": len(self.universe)}
         open_syms = {p["symbol"] for p in self.broker.positions.values()}
         scored = []
         for sym, ctx, sig in cands:
@@ -334,22 +338,28 @@ class Agent:
                                         "reasons": sig.reasons + [why]})
             if not allowed:
                 memory.log_event(f"🧠 رفض {sym} {STRATEGY_AR[sig.strategy]}: {why}")
+                self.blocks.append((time.time(), "memory"))
                 continue
             meme = self.is_meme(sym)
             gst = self.gate_status(sig.strategy, meme)
             champ = self.darwin.champion(sig.strategy)
+            if conf < settings.min_confidence:
+                self.blocks.append((time.time(), "confidence"))
             if conf >= settings.min_confidence and sym not in open_syms and gst != "approved":
+                self.blocks.append((time.time(), "gate"))
                 g_ = (self.gate_meme if meme else self.gate).get(sig.strategy, {})
                 self._throttled(f"gate_{sig.strategy}_{meme}", 6 * 3600,
                                 f"🛡️ {STRATEGY_AR[sig.strategy]}: فرصة في {sym} لكن الاستراتيجية لم تُعتمد بعد"
                                 f"{' للعملات الميمية' if meme else ''} ({g_.get('reason', 'تحت الاختبار')}) — تُسجَّل للتعلم فقط")
                 continue
             if conf >= settings.min_confidence and sym not in open_syms and not accepts(champ, metrics(ctx, sig)):
+                self.blocks.append((time.time(), "darwin"))
                 self._throttled(f"dw_{sym}_{sig.strategy}", 3600,
                                 f"🧬 فلتر داروين تجاوز {sym} ({STRATEGY_AR[sig.strategy]}): الإشارة لا تحقق شروط الدخول المتطورة")
                 continue
             if conf >= settings.min_confidence and sym not in open_syms:
                 if not cn["approved"]:
+                    self.blocks.append((time.time(), "council"))
                     no = [v for v in cn["votes"] if not v["vote"]]
                     key = f"council_{sym}_{sig.strategy}"
                     if time.time() - self._skip_log.get(key, 0) > 3600:
@@ -375,6 +385,7 @@ class Agent:
         for _, conf, sym, ctx, sig, feats, why, cn in scored:
             slots = settings.max_open_positions - len(self.broker.positions)
             if slots <= 0:
+                self.blocks.append((time.time(), "slots"))
                 break
             if sym in {p["symbol"] for p in self.broker.positions.values()}:
                 continue
@@ -383,11 +394,13 @@ class Agent:
             if self.is_meme(sym):
                 n_meme = sum(1 for p in self.broker.positions.values() if self.is_meme(p["symbol"]))
                 if n_meme >= settings.meme_max_positions:
+                    self.blocks.append((time.time(), "meme"))
                     continue  # صفقة ميمية واحدة كحد أقصى
             if sig.side == "short" and not has_futures(self.fut, sym):
                 continue  # لا يوجد عقد Futures مطابق => شراء فقط
             ok, cmult, cnote = self.correlation_check(sym, sig.side)
             if not ok:
+                self.blocks.append((time.time(), "corr"))
                 self._throttled(f"corr_{sym}", 3600, f"🔗 تجاوز {sym}: {cnote}")
                 continue
             await self.open_position(sym, ctx, sig, conf, feats, why, slots, cn, cmult, cnote)
@@ -435,6 +448,14 @@ class Agent:
         return m, f"📏 حجم ×{m:.2f} بناءً على أداء {'مثبت' if m > 1 else 'ضعيف'} للاستراتيجية في هذه الحالة"
 
     async def open_position(self, sym, ctx, sig, conf, feats, why, slots, cn=None, cmult=1.0, cnote=""):
+        if not hasattr(self, "_open_lock"):
+            self._open_lock = asyncio.Lock()
+        async with self._open_lock:  # حماية إضافية: لا صفقتين على نفس العملة أبداً
+            if any(p["symbol"] == sym for p in self.broker.positions.values()):
+                return
+            await self._open_position(sym, ctx, sig, conf, feats, why, slots, cn, cmult, cnote)
+
+    async def _open_position(self, sym, ctx, sig, conf, feats, why, slots, cn=None, cmult=1.0, cnote=""):
         price = self.prices.get(sym, sig.entry)
         # إعادة حساب الوقف والهدف على السعر الحالي بنفس المسافات، ثم تطبيق جينات داروين للبطل
         genome = self.darwin.champion(sig.strategy)
@@ -448,8 +469,9 @@ class Agent:
         meme = self.is_meme(sym)
         spot_only = not has_futures(self.fut, sym)
         emult, enote = self.edge_multiplier(sig.strategy, ctx["regime"]["regime"])
+        sf = self.safe_factor()
         sz = self.risk.size(self.equity, price, sig.stop, conf, atr / price, open_notional, slots, meme=meme,
-                            mult=emult * cmult)
+                            mult=emult * cmult * sf)
         if not sz or sz["notional"] < 6:
             return
         if spot_only:
@@ -470,7 +492,8 @@ class Agent:
         pos = {"symbol": sym, "market": market, "side": sig.side, "qty": sz["qty"], "leverage": sz["leverage"],
                "stop": sig.stop, "init_stop": sig.stop, "target": sig.target, "atr": atr,
                "strategy": sig.strategy, "regime": ctx["regime"]["regime"], "features": feats,
-               "reasons": sig.reasons + [why] + [x for x in (enote, cnote) if x], "risk_usd": sz["risk_usd"], "conf": conf,
+               "reasons": sig.reasons + [why] + [x for x in (enote, cnote, "🐢 الوضع الآمن: نصف الحجم" if sf < 1 else "") if x],
+               "risk_usd": sz["risk_usd"], "conf": conf,
                "genome": genome, "council": cn, "meme": meme}
         try:
             if self.mode == "paper":
@@ -539,6 +562,7 @@ class Agent:
             sz = dict(sz, qty=sz["qty"] * scale, notional=need, risk_usd=new_risk, margin=need / sz["leverage"],
                       risk_pct=new_risk / self.equity)
             return market, sz
+        self.blocks.append((time.time(), "min_notional"))
         key = f"minskip_{sym}_{market}"
         if time.time() - self._skip_log.get(key, 0) > 6 * 3600:
             self._skip_log[key] = time.time()
@@ -547,6 +571,83 @@ class Agent:
         return market, None
 
     # ================================================================ إدارة الصفقات
+    # ================================================================ الوضع الآمن
+    def safe_mode(self):
+        sm = memory.kv_get("safe_mode") or {}
+        if sm.get("until", 0) > time.time():
+            return sm
+        return None
+
+    def safe_factor(self):
+        sm = self.safe_mode()
+        return sm.get("factor", 0.5) if sm else 1.0
+
+    # ================================================================ لماذا لا يتداول؟
+    BLOCK_AR = {"gate": "🛡️ فرص من استراتيجيات لم تجتز الاختبار المخفي بعد", "council": "🏛️ المجلس رفضها",
+                "darwin": "🧬 لا تحقق شروط الدخول المتطورة (داروين)", "memory": "🧠 تشبه أنماطاً خسرت سابقاً",
+                "corr": "🔗 مرتبطة بقوة بصفقات مفتوحة", "meme": "🐸 الحد الأقصى للعملات الميمية",
+                "slots": "📦 كل خانات الصفقات ممتلئة", "min_notional": "💡 الحد الأدنى لـ Binance يتطلب مخاطرة أكبر",
+                "confidence": "📉 ثقة أقل من المطلوب"}
+
+    def why_not(self):
+        items = []
+        add = lambda icon, text, level="info": items.append({"icon": icon, "text": text, "level": level})
+        if not self.running:
+            add("⏸️", "الدخول في صفقات جديدة متوقف يدوياً (زر التشغيل في الإعدادات)", "stop")
+        if self.risk.frozen:
+            add("🚨", f"التداول مجمّد: {self.risk.frozen_reason}", "stop")
+        if self.pretrain_status != "done" and not self.pretrained:
+            add("📚", "يدرس تاريخ العملات قبل أول صفقة", "wait")
+        if self.market_risk_off:
+            add("🛑", "البيتكوين في حالة خطورة عالية — حماية المحفظة", "stop")
+        bo = self.mood.blackout()
+        if bo:
+            add("📅", f"حدث اقتصادي مهم ({bo['title']}) — لا دخول حتى ساعة بعده", "wait")
+        sm = self.safe_mode()
+        if sm:
+            add("🐢", f"الوضع الآمن مفعّل (نصف الحجم) حتى {datetime.fromtimestamp(sm['until'], timezone.utc).strftime('%d/%m %H:%M')} UTC", "info")
+        if self.broker and len(self.broker.positions) >= settings.max_open_positions:
+            add("📦", f"كل الخانات ممتلئة ({settings.max_open_positions} صفقات) — ينتظر إغلاق إحداها", "wait")
+        if not self.fresh_candle():
+            nx = int(CANDLE - time.time() % CANDLE)
+            add("🕯️", f"يدخل فقط فور إغلاق الشمعة — التحليل التالي بعد {nx // 60}:{nx % 60:02d}", "info")
+        ls = self.last_scan
+        if ls["ts"]:
+            add("🔎", f"آخر تحليل: {ls['signals']} فرصة من {ls['coins']} عملة", "info")
+        cut = time.time() - 3600
+        cnt = collections.Counter(k for t, k in self.blocks if t >= cut)
+        for k, n in cnt.most_common(5):
+            add("•", f"{self.BLOCK_AR.get(k, k)}: {n} مرة خلال الساعة", "filter")
+        blocking = [i for i in items if i["level"] in ("stop", "wait")]
+        if not blocking and not cnt and ls["signals"] == 0:
+            add("😌", "لا توجد فرصة تستوفي الشروط الآن — الانتظار جزء من الانضباط", "ok")
+        last = memory.recent_trades(1)
+        opened = max([p["opened"] for p in (self.broker.positions.values() if self.broker else [])] or [0])
+        last_ts = max(opened, last[0]["closed"] if last else 0) or None
+        return {"blocked": bool(blocking), "items": items, "last_trade": last_ts,
+                "open": len(self.broker.positions) if self.broker else 0}
+
+    # ================================================================ مؤشر الصحة
+    def health(self):
+        parts = []
+        def part(name, ok, w, note=""):
+            parts.append({"name": name, "ok": bool(ok), "w": w, "note": note})
+        part("حلقة الوكيل تعمل", time.time() - self.heartbeat < 300, 25)
+        mem = memory_usage()
+        part("ذاكرة السيرفر", mem.get("available_mb", 999) > 150, 15, f"{mem.get('available_mb', '—')} MB متاحة")
+        part("البث المباشر", self.radar.connected and time.time() - self.radar.last_msg < 60, 15)
+        errs = sum(1 for e in memory.events(200) if e["level"] in ("warn", "error") and e["ts"] > time.time() - 3600
+                   and "خطأ في الدورة" in e["msg"])
+        part("الاتصال بـ Binance", errs < 3, 15, f"{errs} أخطاء خلال الساعة" if errs else "")
+        part("مصادر الأخبار والمزاج", self.mood.fng is not None and len(self.mood.news) > 0, 10)
+        part("بيانات الخيارات", bool(self.onchain.options), 5)
+        last_bk = memory.kv_get("backup_day")
+        part("نسخة احتياطية حديثة", bool(last_bk), 5, last_bk or "لا توجد بعد")
+        part("المراقب الخارجي مربوط", bool(memory.kv_get("hc_url")), 5)
+        part("دراسة التاريخ مكتملة", bool(self.study.get("finished")), 5)
+        score = sum(p["w"] for p in parts if p["ok"])
+        return {"score": score, "parts": parts}
+
     def fresh_candle(self):
         return (time.time() % CANDLE) <= FRESH_WINDOW
 
@@ -722,7 +823,26 @@ class Agent:
         notify.send("🚨 مفتاح الطوارئ", f"{reason}\nأُغلقت كل الصفقات وجُمِّد التداول.", priority=5, tags=["rotating_light"])
 
     # ================================================================ التقرير اليومي
+    def maybe_weekly_report(self):
+        local = datetime.now(performance.LOCAL_TZ)
+        wk = local.strftime("%G-W%V")
+        if local.weekday() != 4 or local.hour < 9 or memory.kv_get("last_weekly") == wk:  # الجمعة 9 صباحاً
+            return
+        memory.kv_set("last_weekly", wk)
+        try:
+            title, text = performance.weekly_report(self.mode, self.equity, self.darwin.history, self.gate,
+                                                   self.explorer.summary(self.prices))
+        except Exception as e:
+            log.warning(f"weekly: {e}")
+            return
+        reps = memory.kv_get("reports", [])
+        reps.insert(0, {"ts": time.time(), "title": title, "text": text, "weekly": True})
+        memory.kv_set("reports", reps[:20])
+        memory.log_event(f"📬 {title}")
+        notify.send(f"📬 {title}", text, tags=["mailbox"])
+
     def maybe_daily_report(self):
+        self.maybe_weekly_report()
         now = datetime.now(timezone.utc)
         today = now.strftime("%Y-%m-%d")
         if now.hour < REPORT_HOUR_UTC or memory.kv_get("last_report") == today:
@@ -1098,6 +1218,9 @@ class Agent:
             "radar_on": self.radar.connected,
             "explorer": self.explorer.summary(self.prices),
             "exec": execution.summary(self.mode),
+            "why": self.why_not(),
+            "health": self.health(),
+            "safe": self.safe_mode(),
             "onchain": self.onchain.summary(),
             "testnet": execution.testnet_status(),
             "realtime": {"on": self.radar.connected and time.time() - self.radar.last_msg < 30,

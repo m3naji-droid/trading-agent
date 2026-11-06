@@ -151,7 +151,8 @@ async def candles(req: Request, symbol: str = "BTC/USDT", tf: str = "15m"):
     return await agent.candles(symbol, tf)
 
 
-EXIT_AR = {"stop": "وقف الخسارة", "trailing": "الوقف المتحرك", "target": "الهدف", "timeout": "انتهاء المدة",
+EXIT_AR = {"guard": "حارس الأرباح", "giveback": "إرجاع الربح", "breakeven": "تعادل بعد ربح جزئي",
+           "exchange_target": "هدف المنصة", "stop": "وقف الخسارة", "trailing": "الوقف المتحرك", "target": "الهدف", "timeout": "انتهاء المدة",
            "kill": "مفتاح الطوارئ", "regime": "تغيّر حالة السوق", "exchange_stop": "وقف المنصة"}
 
 
@@ -269,6 +270,53 @@ async def backup_restore(req: Request):
     except ValueError as e:
         raise HTTPException(400, str(e))
     asyncio.get_event_loop().call_later(1.0, lambda: os._exit(0))  # إعادة تشغيل لتحميل الذاكرة المستعادة
+    return {"ok": True}
+
+
+@app.get("/api/trades")
+async def trades_all(req: Request, limit: int = 500):
+    auth(req)
+    return {"trades": memory.recent_trades(max(1, min(limit, 2000)))}
+
+
+@app.get("/api/export")
+async def export_csv(req: Request):
+    """كل الصفقات الفعلية كملف CSV يفتح في Excel (عناوين عربية)."""
+    auth(req)
+    import csv
+    import io
+    from datetime import datetime as _dt
+    rows = memory.recent_trades(100000)
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["رقم", "الوضع", "العملة", "السوق", "الاتجاه", "الاستراتيجية", "حالة السوق", "وقت الفتح (UTC)",
+                "وقت الإغلاق (UTC)", "سعر الدخول", "وقف الخسارة", "الهدف", "سعر الخروج", "الكمية", "الرافعة",
+                "الربح $", "الربح R", "سبب الخروج", "الأسباب"])
+    fmt = lambda t: _dt.utcfromtimestamp(t).strftime("%Y-%m-%d %H:%M") if t else ""
+    for t in reversed(rows):
+        w.writerow([t["id"], t["mode"], t["symbol"], t["market"], "شراء" if t["side"] == "long" else "بيع",
+                    STRATEGY_AR.get(t["strategy"], t["strategy"]), LABELS_AR.get(t["regime"], t["regime"]),
+                    fmt(t["opened"]), fmt(t["closed"]), t["entry"], t["stop"], t["target"], t["exit"], t["qty"],
+                    t["leverage"], round(t["pnl"] or 0, 4), round(t["r_mult"] or 0, 3),
+                    EXIT_AR.get(t["exit_reason"], t["exit_reason"]), " | ".join(t.get("reasons") or [])])
+    data = "\ufeff" + buf.getvalue()  # BOM حتى يعرض Excel العربية صحيحاً
+    name = f"trades-{time.strftime('%Y-%m-%d')}.csv"
+    return Response(data.encode("utf-8"), media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+@app.post("/api/safe")
+async def safe_mode(req: Request):
+    auth(req)
+    body = await req.json()
+    hours = float(body.get("hours", 0))
+    if hours <= 0:
+        memory.kv_set("safe_mode", {})
+        memory.log_event("🐢 أُطفئ الوضع الآمن — العودة للحجم الطبيعي")
+    else:
+        hours = min(hours, 24 * 30)
+        memory.kv_set("safe_mode", {"until": time.time() + hours * 3600, "factor": 0.5, "since": time.time()})
+        memory.log_event(f"🐢 الوضع الآمن مفعّل لمدة {hours:.0f} ساعة: نصف حجم الصفقات")
     return {"ok": True}
 
 
