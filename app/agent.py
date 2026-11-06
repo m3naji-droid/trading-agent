@@ -24,6 +24,7 @@ from .council import deliberate
 from .darwin import Darwin, GENE_AR
 from .ghosts import Ghosts
 from .radar import WhaleRadar
+from .explorer import Explorer
 from .orderflow import LiquidationTracker, snapshot
 from .learner import Learner, simulate_trade
 from .risk import RiskManager
@@ -66,6 +67,7 @@ class Agent:
         self.mood = Mood()
         self.darwin = Darwin(list(STRATEGIES))
         self.ghosts = Ghosts()
+        self.explorer = Explorer(on_close=self._explorer_closed)
         self.radar = WhaleRadar()
         self.liq.on_event = self.radar.add_liquidation
         self.radar.on_tick = self.on_tick
@@ -233,6 +235,7 @@ class Agent:
         await self.manage_positions()
         await self.decide([c for r in results for c in r])
         self.ghosts.tick(self.prices, self.prices.get("BTC/USDT"))
+        self.explorer.tick_all(self.prices)
         for ev in self.darwin.pop_events():
             ch = "، ".join(f"{GENE_AR[k]} {ev['old'][k]}→{ev['new'][k]}" for k in ev["new"] if ev["new"][k] != ev["old"][k])
             memory.log_event(f"🧬 داروين: ترقية جيل {ev['generation']} لـ«{STRATEGY_AR[ev['strategy']]}» "
@@ -275,7 +278,11 @@ class Agent:
 
         ctx, sigs, near = await asyncio.to_thread(compute)
         for sg in near:  # فرص قريبة: للتعلم فقط
-            self._open_shadow(sym, ctx, sg, features(ctx, sg), None, near=True)
+            fe = features(ctx, sg)
+            self._open_shadow(sym, ctx, sg, fe, None, near=True)
+            if self.fresh_candle() and sym in self.prices:
+                self.explorer.consider(sym, sg, ctx, self.prices[sym], self.darwin.champion(sg.strategy), True,
+                                       {"features": fe, "regime": ctx["regime"]["regime"], "reasons": sg.reasons})
         self._resolve_shadows(sym, ctx["df"])
         s = ctx["smc"]
         self.analysis[sym] = {
@@ -312,6 +319,10 @@ class Agent:
                                      self.darwin.champion(sig.strategy), self.market_risk_off,
                                      self.mood.blackout(), self.prices, meme=self.is_meme(sym),
                                      spot_only=not has_futures(self.fut, sym))
+            if self.fresh_candle():  # المستكشف يدخل حتى ما رفضه المجلس أو الذاكرة — ليتعلم منه
+                self.explorer.consider(sym, sig, ctx, price, self.darwin.champion(sig.strategy), False,
+                                       {"features": feats, "regime": ctx["regime"]["regime"], "council": cn,
+                                        "reasons": sig.reasons + [why]})
             if not allowed:
                 memory.log_event(f"🧠 رفض {sym} {STRATEGY_AR[sig.strategy]}: {why}")
                 continue
@@ -479,6 +490,7 @@ class Agent:
         self.ticks["n"] += 1
         self.ticks["last"] = time.time()
         self.ghosts.on_tick(sym, price)
+        self.explorer.on_tick(sym, price)
         if not self.broker:
             return
         for pos in list(self.broker.positions.values()):
@@ -545,6 +557,16 @@ class Agent:
             memory.log_event(f"❌ فشل إغلاق {pos['symbol']}: {e}", "error")
             return
         self._on_closed(pos, fill, pnl, reason)
+
+    def _explorer_closed(self, p, fill, net, r, reason):
+        """كل صفقة يغلقها المستكشف تعلّم الوكيل الرئيسي."""
+        self.learner.update(p["strategy"], p.get("regime", "RANGE"), r, weight=0.15 if p["near"] else 0.3)
+        memory.save_trade({"symbol": p["symbol"], "market": "explore_near" if p["near"] else "explore",
+                           "strategy": p["strategy"], "side": p["side"], "regime": p.get("regime"),
+                           "features": p.get("features"), "reasons": p.get("reasons"), "council": p.get("council"),
+                           "entry": p["entry"], "stop": p["init_stop"], "target": p["target"], "qty": p["qty"],
+                           "leverage": 1, "exit": fill, "pnl": net, "r_mult": r, "exit_reason": reason,
+                           "opened": p["opened"], "closed": time.time(), "mode": self.mode, "shadow": 1})
 
     def _on_closed(self, pos, fill, pnl, reason):
         r = pnl / pos["risk_usd"] if pos.get("risk_usd") else 0
@@ -654,8 +676,13 @@ class Agent:
         st.setdefault("agg_meme", {})
         todo = [s_ for s_ in self.universe
                 if s_.split("/")[0] not in (st["meme_done"] if self.is_meme(s_) else st["done"])]
+        if st.get("finished") and "strategies" not in st:
+            st["strategies"] = list(STRATEGIES)[:12]  # ما درسته نسخة v6
         if not todo:
             self.pretrain_status = "done"
+            missing = [k for k in STRATEGIES if k not in st.get("strategies", [])]
+            if missing and st.get("finished"):
+                await self._study_extra(missing)
             return
         bars = settings.pretrain_bars
         raw1, raw4, fund = {}, {}, {}
@@ -718,6 +745,7 @@ class Agent:
             okm = [STRATEGY_AR[k] for k, g in self.gate_meme.items() if g["status"] == "approved"]
             memory.log_event(f"🐸 الاختبار المخفي للعملات الميمية: {'، '.join(okm) or 'لم تنجح أي استراتيجية بعد'}", "learn")
         st["finished"] = time.time()
+        st["strategies"] = list(STRATEGIES)
         memory.kv_set("study", st)
         memory.kv_set("darwin_seeded", True)
         self.pretrain_status = "done"
@@ -729,6 +757,59 @@ class Agent:
 
     def is_meme(self, sym):
         return sym in self.memes or sym.split("/")[0] in settings.memes
+
+    async def _study_extra(self, only):
+        """دراسة تكميلية: استراتيجيات جديدة فقط، على التاريخ المحفوظ في السيرفر (لا تُعاد الدراسة كاملة)."""
+        st = self.study
+        names = "، ".join(STRATEGY_AR[k] for k in only)
+        memory.log_event(f"📚 دراسة تكميلية لـ {len(only)} استراتيجيات جديدة على سنتين من التاريخ: {names}", "learn")
+        self.study_progress.update(phase=f"دراسة تكميلية ({len(only)} استراتيجيات)", pct=0.0)
+        bars = settings.pretrain_bars
+        raw1 = {}
+        for sym in self.universe:
+            try:
+                raw1[sym.split("/")[0]] = await study.update_history(self.spot, sym, "1h", bars)
+            except Exception as e:
+                log.warning(f"extra {sym}: {e}")
+        panel = await asyncio.to_thread(rs_panel, {b: d.set_index("ts")["close"] for b, d in raw1.items() if len(d)})
+        btc_e = enrich(raw1["BTC"]).dropna().reset_index(drop=True) if "BTC" in raw1 and len(raw1["BTC"]) else None
+        done = 0
+        for i, sym in enumerate(self.universe):
+            base = sym.split("/")[0]
+            if base not in raw1 or len(raw1[base]) < 400:
+                continue
+            self.status = f"دراسة تكميلية: {base} ({i + 1}/{len(self.universe)})"
+            try:
+                r4 = await study.update_history(self.spot, sym, "4h", bars // 4)
+                f = await study.update_funding(self.fut, sym, bars // 24 + 2)
+                ts = raw1[base]["ts"].values
+                split = ts[int(len(ts) * (1 - study.TEST_SHARE))]
+                prog = lambda p, i=i: self.study_progress.update(pct=(i + p) / len(self.universe), current=base)
+                stats, n = await asyncio.to_thread(
+                    study.simulate_symbol, base, raw1[base], r4, btc_e, panel[base] if base in panel else None, f,
+                    split, self.darwin, self.learner, step=2, recent_from=time.time() * 1000 - 30 * 86_400_000,
+                    progress=prog, only=set(only))
+            except Exception as e:
+                log.exception("extra study")
+                continue
+            study.merge_stats(st["agg_meme"] if self.is_meme(sym) else st["agg"], stats)
+            done += 1
+            gc.collect()
+        if done < max(1, min(3, len(self.universe) // 3)):
+            memory.log_event("⚠️ الدراسة التكميلية لم تكتمل — ستُعاد المحاولة لاحقاً", "warn")
+            return
+        self.gate = study.compute_gate(st["agg"], self.gate)
+        memory.kv_set("gate", self.gate)
+        if st.get("agg_meme"):
+            self.gate_meme = study.compute_gate(st["agg_meme"], self.gate_meme)
+            memory.kv_set("gate_meme", self.gate_meme)
+        st["strategies"] = list(STRATEGIES)
+        memory.kv_set("study", st)
+        self.study_progress.update(phase="مكتملة", pct=1.0, current="")
+        ok = [STRATEGY_AR[k] for k in only if self.gate.get(k, {}).get("status") == "approved"]
+        msg = f"اجتازت الاختبار المخفي: {'، '.join(ok) or 'لا شيء'} — الباقي يُختبر حياً"
+        memory.log_event(f"🎓 انتهت الدراسة التكميلية. {msg}", "learn")
+        notify.send("🎓 استراتيجيات جديدة دُرست", msg, tags=["mortar_board"])
 
     def gate_status(self, strategy, meme=False):
         if meme:  # العملات الميمية: اختبار مخفي خاص بها، ولا تُتداول قبل اجتيازه
@@ -884,6 +965,7 @@ class Agent:
             "ghosts": self.ghosts.summary(self.prices),
             "council_stats": memory.council_stats(self.mode),
             "radar_on": self.radar.connected,
+            "explorer": self.explorer.summary(self.prices),
             "realtime": {"on": self.radar.connected and time.time() - self.radar.last_msg < 30,
                          "ticks": self.ticks["n"], "actions": self.ticks["actions"],
                          "next_close": (time.time() // CANDLE + 1) * CANDLE, "fresh": self.fresh_candle()},

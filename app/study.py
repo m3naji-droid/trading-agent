@@ -144,7 +144,7 @@ def _add(b, r):
 
 def simulate_symbol(base, raw1h, raw4h, btc_e, rs_series, funding, split_ts, darwin, learner, *,
                     start_ts=None, learn=True, save=True, step=1, lw=0.15, dw=0.5, recent_from=None,
-                    progress=None):
+                    progress=None, only=None):
     """
     يمر على التاريخ شمعة شمعة كأنه يتداول لحظياً.
     يرجع إحصاءات لكل استراتيجية: train / test (المخفي) / recent (آخر 30 يوماً).
@@ -180,7 +180,7 @@ def simulate_symbol(base, raw1h, raw4h, btc_e, rs_series, funding, split_ts, dar
         ctx = {"df": win, "htf": hwin, "ttf": dwin, "regime": detect_regime(win), "smc": smc_mod.analyze(win),
                "flow": None, "base": base, "liq": None}
         reg = ctx["regime"]["regime"]
-        for sig in run_all(ctx):
+        for sig in run_all(ctx, only):
             if i <= cooldown[sig.strategy]:
                 continue
             cooldown[sig.strategy] = i + 6
@@ -276,12 +276,14 @@ def live_redemption(gate, mode):
     """استراتيجية غير معتمدة تثبت نفسها في الصفقات التجريبية الحية => تُعتمد."""
     changes = []
     with memory._conn() as c:
-        rows = c.execute("SELECT strategy, COUNT(*) n, AVG(r_mult) a FROM trades WHERE shadow=1 AND market='shadow' "
-                         "AND mode=? AND closed>? GROUP BY strategy", (mode, time.time() - 30 * 86400)).fetchall()
+        rows = c.execute("SELECT strategy, market, COUNT(*) n, AVG(r_mult) a FROM trades WHERE shadow=1 "
+                         "AND market IN ('shadow','explore') AND mode=? AND closed>? GROUP BY strategy, market "
+                         "ORDER BY n DESC", (mode, time.time() - 30 * 86400)).fetchall()
     for r in rows:
         g = gate.get(r["strategy"])
         if g and g["status"] in ("testing", "rejected") and r["n"] >= LIVE_MIN_N and (r["a"] or 0) >= LIVE_MIN_AVG:
             g.update(status="approved", source="live",
-                     reason=f"أثبتت نفسها في التداول التجريبي الحي ({r['a']:+.2f}R على {r['n']} فرصة)")
+                     reason=f"أثبتت نفسها {'مع المستكشف' if r['market'] == 'explore' else 'في التداول التجريبي الحي'} "
+                            f"({r['a']:+.2f}R على {r['n']} صفقة)")
             changes.append(r["strategy"])
     return changes

@@ -363,6 +363,123 @@ def session_breakout(ctx):
     return None
 
 
+
+# ================================================================ الاستراتيجيات الجديدة (v11)
+
+# ---------------------------------------------------------------- 9) اختراق السلحفاة
+def donchian_turtle(ctx):
+    """اختراق أعلى/أدنى 55 شمعة مع الاتجاه الأكبر — من أشهر أنظمة تتبع الاتجاه تاريخياً."""
+    df, h = ctx["df"], ctx["htf"].iloc[-1]
+    l, p = df.iloc[-1], df.iloc[-2]
+    a = l["atr"]
+    slack = 0.2 * a if _relax(ctx) else 0
+    if l["close"] > l["hh55"] - slack and p["close"] <= p["hh55"] and h["close"] > h["ema50"] and l["adx"] > 18:
+        return _mk("donchian_turtle", "long", l["close"], a, 2.0, 3.0, 0.57,
+                   ["اختراق أعلى قمة في 55 شمعة", "الفريم الأكبر صاعد"])
+    if l["close"] < l["ll55"] + slack and p["close"] >= p["ll55"] and h["close"] < h["ema50"] and l["adx"] > 18:
+        return _mk("donchian_turtle", "short", l["close"], a, 2.0, 3.0, 0.57,
+                   ["كسر أدنى قاع في 55 شمعة", "الفريم الأكبر هابط"])
+    return None
+
+
+# ---------------------------------------------------------------- 10) ارتداد RSI-2
+def rsi2_pullback(ctx):
+    """تصحيح حاد قصير داخل اتجاه قوي (RSI بفترة 2) — ارتداد سريع وهدف قريب."""
+    df = ctx["df"]
+    l = df.iloc[-1]
+    lo, hi = (15, 85) if _relax(ctx) else (10, 90)
+    a = l["atr"]
+    if l["close"] > l["ema200"] and l["ema50"] > l["ema200"] and l["rsi2"] < lo:
+        return _mk("rsi2_pullback", "long", l["close"], a, 1.5, 1.5, 0.57,
+                   [f"تصحيح حاد (RSI-2 = {l['rsi2']:.0f})", "داخل اتجاه صاعد طويل (فوق EMA200)"])
+    if l["close"] < l["ema200"] and l["ema50"] < l["ema200"] and l["rsi2"] > hi:
+        return _mk("rsi2_pullback", "short", l["close"], a, 1.5, 1.5, 0.57,
+                   [f"ارتداد حاد (RSI-2 = {l['rsi2']:.0f})", "داخل اتجاه هابط طويل (تحت EMA200)"])
+    return None
+
+
+# ---------------------------------------------------------------- 11) استعادة VWAP
+def vwap_reclaim(ctx):
+    """السعر يستعيد متوسط اليوم المرجّح بالحجم (VWAP) مع اتجاه الفريم الأكبر."""
+    df, h = ctx["df"], ctx["htf"].iloc[-1]
+    l, p = df.iloc[-1], df.iloc[-2]
+    vz = 0.0 if _relax(ctx) else 0.3
+    a = l["atr"]
+    if p["close"] < p["vwap"] and l["close"] > l["vwap"] and l["close"] > l["open"] and l["vol_z"] >= vz \
+            and h["close"] > h["ema50"] and l["close"] > l["ema50"]:
+        return _mk("vwap_reclaim", "long", l["close"], a, 1.2, 2.0, 0.56,
+                   ["استعادة VWAP اليومي بحجم جيد", "الفريم الأكبر صاعد"],
+                   stop_override=df["low"].iloc[-4:].min() - 0.2 * a)
+    if p["close"] > p["vwap"] and l["close"] < l["vwap"] and l["close"] < l["open"] and l["vol_z"] >= vz \
+            and h["close"] < h["ema50"] and l["close"] < l["ema50"]:
+        return _mk("vwap_reclaim", "short", l["close"], a, 1.2, 2.0, 0.56,
+                   ["خسارة VWAP اليومي بحجم جيد", "الفريم الأكبر هابط"],
+                   stop_override=df["high"].iloc[-4:].max() + 0.2 * a)
+    return None
+
+
+# ---------------------------------------------------------------- 12) الترند الخارق
+def supertrend_adx(ctx):
+    """انقلاب مؤشر Supertrend مع قوة اتجاه كافية."""
+    df = ctx["df"]
+    l, p = df.iloc[-1], df.iloc[-2]
+    adx_min = 16 if _relax(ctx) else 20
+    a = l["atr"]
+    if p["st_dir"] == -1 and l["st_dir"] == 1 and l["adx"] > adx_min and l["close"] > l["ema50"]:
+        return _mk("supertrend_adx", "long", l["close"], a, 1.5, 2.5, 0.57,
+                   ["Supertrend انقلب صاعداً", f"قوة اتجاه ADX {l['adx']:.0f}"],
+                   stop_override=min(l["st_line"], l["close"] - 0.8 * a))
+    if p["st_dir"] == 1 and l["st_dir"] == -1 and l["adx"] > adx_min and l["close"] < l["ema50"]:
+        return _mk("supertrend_adx", "short", l["close"], a, 1.5, 2.5, 0.57,
+                   ["Supertrend انقلب هابطاً", f"قوة اتجاه ADX {l['adx']:.0f}"],
+                   stop_override=max(l["st_line"], l["close"] + 0.8 * a))
+    return None
+
+
+# ---------------------------------------------------------------- 13) اختبار مستوى الأمس
+def level_retest(ctx):
+    """كسر قمة/قاع الأمس، ثم عودة لاختباره من الجهة الأخرى وصموده."""
+    df = ctx["df"]
+    l = df.iloc[-1]
+    pdh, pdl, a = l["pdh"], l["pdl"], l["atr"]
+    if pdh <= 0 or pdl <= 0:
+        return None
+    rec = df.iloc[-13:-1]
+    tol = 0.35 * a if _relax(ctx) else 0.2 * a
+    if (rec["close"] > pdh).any() and l["low"] <= pdh + tol and l["close"] > pdh and l["close"] > l["open"]:
+        return _mk("level_retest", "long", l["close"], a, 1.2, 2.2, 0.57,
+                   ["اختراق قمة الأمس", "إعادة اختبارها من الأعلى وصمودها"], stop_override=pdh - 0.5 * a)
+    if (rec["close"] < pdl).any() and l["high"] >= pdl - tol and l["close"] < pdl and l["close"] < l["open"]:
+        return _mk("level_retest", "short", l["close"], a, 1.2, 2.2, 0.57,
+                   ["كسر قاع الأمس", "إعادة اختباره من الأسفل ورفضه"], stop_override=pdl + 0.5 * a)
+    return None
+
+
+# ---------------------------------------------------------------- 14) الاختراق ثم إعادة الاختبار
+def breakout_retest(ctx):
+    """اختراق حقيقي يعود السعر لاختباره ولا يكسره — دخول أفضل من مطاردة الاختراق."""
+    df = ctx["df"]
+    l = df.iloc[-1]
+    a = l["atr"]
+    win = df.iloc[-16:-3]
+    tol = 0.35 * a if _relax(ctx) else 0.2 * a
+    up = win[win["close"] > win["hh20"]]
+    if len(up):
+        lvl = float(up["hh20"].iloc[-1])
+        held = df["low"].iloc[-3:].min() > lvl - 0.3 * a
+        if held and l["low"] <= lvl + tol and l["close"] > lvl and l["close"] > l["open"]:
+            return _mk("breakout_retest", "long", l["close"], a, 1.2, 2.5, 0.58,
+                       ["اختراق مستوى مقاومة", "عاد السعر لاختباره وصمد فوقه"], stop_override=lvl - 0.6 * a)
+    dn = win[win["close"] < win["ll20"]]
+    if len(dn):
+        lvl = float(dn["ll20"].iloc[-1])
+        held = df["high"].iloc[-3:].max() < lvl + 0.3 * a
+        if held and l["high"] >= lvl - tol and l["close"] < lvl and l["close"] < l["open"]:
+            return _mk("breakout_retest", "short", l["close"], a, 1.2, 2.5, 0.58,
+                       ["كسر مستوى دعم", "عاد السعر لاختباره ورُفض تحته"], stop_override=lvl + 0.6 * a)
+    return None
+
+
 ORIGINAL = ["momentum_breakout", "trend_pullback", "mean_reversion", "smc_reversal"]
 STRATEGIES = {
     "momentum_breakout": momentum_breakout,
@@ -377,6 +494,12 @@ STRATEGIES = {
     "mtf_confluence": mtf_confluence,
     "divergence": divergence,
     "session_breakout": session_breakout,
+    "donchian_turtle": donchian_turtle,
+    "rsi2_pullback": rsi2_pullback,
+    "vwap_reclaim": vwap_reclaim,
+    "supertrend_adx": supertrend_adx,
+    "level_retest": level_retest,
+    "breakout_retest": breakout_retest,
 }
 
 STRATEGY_AR = {
@@ -392,6 +515,12 @@ STRATEGY_AR = {
     "mtf_confluence": "توافق الفريمات",
     "divergence": "الانحراف الخفي",
     "session_breakout": "افتتاح الجلسات",
+    "donchian_turtle": "اختراق السلحفاة",
+    "rsi2_pullback": "ارتداد RSI-2",
+    "vwap_reclaim": "استعادة VWAP",
+    "supertrend_adx": "الترند الخارق",
+    "level_retest": "اختبار مستوى الأمس",
+    "breakout_retest": "الاختراق ثم إعادة الاختبار",
 }
 
 
@@ -461,9 +590,11 @@ def metrics(ctx, sig: Signal) -> dict:
             "rsi_dir": rsi if sig.side == "long" else 100 - rsi, "rr": float(sig.rr)}
 
 
-def run_all(ctx) -> list:
+def run_all(ctx, only=None) -> list:
     out = []
     for name, fn in STRATEGIES.items():
+        if only is not None and name not in only:
+            continue
         try:
             s = fn(ctx)
         except Exception:

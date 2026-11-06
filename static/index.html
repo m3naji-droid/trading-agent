@@ -201,6 +201,7 @@ details.dw summary b::before{content:'◂ ';color:var(--mut);font-size:11px}deta
 
 <section class="tab" id="t-learn">
   <div class="card"><h2>🛡️ الاستراتيجيات والاختبار المخفي</h2><div id="gate"></div></div>
+  <div class="card"><h2>🧭 المستكشف — يتعلم بالمشاركة</h2><div id="explorer"></div></div>
   <div class="card"><h2>🧬 داروين — تطوّر الاستراتيجيات</h2><div id="darwin"></div></div>
   <div class="card"><h2>🔔 الإشعارات على الجوال</h2><div id="ntf"></div></div>
   <div class="card"><h2>تقدّم التعلم</h2><div id="pt"></div></div>
@@ -304,7 +305,7 @@ async function loadChart(){const s=$('sym').value;if(!s||!cs)return;try{const d=
 let LOADED_VER=null;
 function hardRefresh(){$('rfb').classList.add('spin');setTimeout(()=>location.reload(),250)}
 function render(s){S=s;if(s.strategy_names)Object.assign(STR,s.strategy_names);try{renderGate(s)}catch(e){console.log(e)}if(s.version){if(LOADED_VER===null)LOADED_VER=s.version;else if(s.version!==LOADED_VER)$('upd').style.display='block'}try{renderPerf(s)}catch(e){console.log(e)}
- for(const[f,a]of[[renderMood,s.mood],[renderDarwin,s.darwin],[renderCouncil,s.council_stats]])try{f(a)}catch(e){console.log(e)}
+ for(const[f,a]of[[renderExplorer,s.explorer],[renderMood,s.mood],[renderDarwin,s.darwin],[renderCouncil,s.council_stats]])try{f(a)}catch(e){console.log(e)}
  try{renderGhosts(s)}catch(e){console.log(e)}$('ver').textContent=s.version||'—';
  $('mode').textContent=s.mode.toUpperCase();$('mode').className='pill '+(s.mode==='live'?'w':'on');
  $('run').textContent=s.frozen?'مُجمَّد':s.running?'يعمل':'متوقف';$('run').className='pill '+(s.frozen?'off':s.running?'on':'w');
@@ -382,6 +383,13 @@ function renderGate(s){const g=s.gate;if(!g)return;const st=s.study||{},dr=s.dre
  h+='<p class="reasons" style="margin-top:8px">يتعلم الوكيل من أول 70% من التاريخ، ثم يُختبر على آخر 30% لم يرها. لا يتداول فعلياً إلا بالمعتمدة؛ الباقي يُتابع في الصفقات التجريبية، وتُعتمد إذا أثبتت نفسها حياً (40 فرصة بمتوسط +0.10R).</p>';
  $('gate').innerHTML=h}
 const DW_OPEN=new Set();
+function renderExplorer(x){if(!x)return;
+ const k=(l,v,c='')=>`<div class="kpi"><small>${l}</small><b class="num ${c}">${v}</b></div>`;
+ let h=`<div class="grid">${k('صفقات مغلقة',x.trades)}${k('مفتوحة الآن',x.open+'/'+x.max_pos)}${k('نسبة الربح',f2(x.winrate*100,0)+'%')}${k('متوسط الصفقة',f2(x.avg_r)+'R',x.avg_r>=0?'up':'dn')}</div>
+ <div class="row" style="margin-top:6px"><span>المحفظة الوهمية</span><b class="num ${x.return>=0?'up':'dn'}">$${f2(x.equity)} (${pct(x.return)})</b></div>`;
+ if(x.strategies.length)h+=`<h2 style="margin-top:12px">ماذا تعلّم من كل استراتيجية</h2>`+x.strategies.slice(0,18).map(r=>`<div class="row"><div><b>${STR[r.strategy]||r.strategy}</b><div class="reasons"><span class="num">${r.n}</span> كاملة · ربح <span class="num">${f2(r.winrate*100,0)}%</span>${r.near_n?` · <span class="num">${r.near_n}</span> قريبة (<span class="num">${f2(r.near_avg)}R</span>)`:''}</div></div><b class="num ${r.avg_r>=0?'up':'dn'}">${r.n?f2(r.avg_r)+'R':'—'}</b></div>`).join('');
+ h+='<p class="reasons" style="margin-top:8px">🧭 وكيل تعليمي بمحفظة وهمية ($1000) — <b>لا يلمس المال الحقيقي أبداً</b>. يدخل كل الفرص حتى التي رفضها المجلس أو البوابة، والفرص القريبة أيضاً، حتى 25 صفقة معاً. ما يتعلمه يذهب للوكيل الرئيسي (ذاكرة الأنماط، ثقة الاستراتيجيات، وأدلة اعتمادها)، بينما يبقى الوكيل الرئيسي منضبطاً لتبقى نتائجه دليلاً صادقاً على الجاهزية.</p>';
+ $('explorer').innerHTML=h}
 function renderDarwin(d){if(!d)return;const st=Object.entries(d.strategies);
  $('darwin').innerHTML=st.map(([k,v])=>{const c=v.champion,bc=v.challengers[0];
   const gl=(keys)=>(keys||Object.keys(c.genes)).map(g=>{const x=c.genes[g],df=d.default[g],same=Math.abs(x-df)<0.005,ch=x>df+0.005?'↑':x<df-0.005?'↓':'';
