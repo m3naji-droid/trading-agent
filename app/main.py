@@ -16,7 +16,8 @@ from fastapi.staticfiles import StaticFiles
 
 from .agent import Agent
 from .config import settings
-from . import memory, notify, performance
+from . import memory, notify, performance, execution, maintenance
+from fastapi.responses import Response
 from .strategies import STRATEGY_AR
 from .regime import LABELS_AR
 
@@ -81,6 +82,7 @@ def watchdog():
 async def lifespan(app):
     await agent.start()
     threading.Thread(target=watchdog, daemon=True).start()
+    asyncio.create_task(maintenance.monitor_loop(agent))
     asyncio.create_task(update_watcher())
     if RUNNING_SHA and memory.kv_get("last_version") != RUNNING_SHA:
         memory.log_event(f"✅ يعمل الآن الإصدار {VERSION_NAME}")
@@ -136,6 +138,7 @@ async def state(req: Request):
     s["reports"] = memory.kv_get("reports", [])[:7]
     s["notify"] = {"on": notify.enabled(), "topic": notify.topic(), "server": notify.SERVER}
     s["version"] = VERSION_NAME
+    s["maint"] = maintenance.status()
     s["version_date"] = VERSION_DATE
     return s
 
@@ -216,6 +219,53 @@ async def radar(req: Request, window: int = 1800):
     return agent.radar.snapshot(max(300, min(window, 3600)))
 
 
+@app.post("/api/maint")
+async def maint(req: Request):
+    auth(req)
+    body = await req.json()
+    a = body.get("action")
+    if a == "hc_set":
+        try:
+            maintenance.set_hc_url(body.get("url", ""))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        ok = await asyncio.to_thread(maintenance.ping) if body.get("url") else False
+        memory.log_event("🩺 تم ربط المراقب الخارجي" if ok else "🩺 حُفظ رابط المراقب (لم تنجح النبضة الأولى)")
+        return {"ok": ok}
+    if a == "hc_test":
+        return {"ok": await asyncio.to_thread(maintenance.ping)}
+    if a == "backup_now":
+        p = await asyncio.to_thread(maintenance.make_gz, os.path.join(
+            maintenance.BACKUP_DIR, f"agent-{time.strftime('%Y-%m-%d')}-manual.db.gz"))
+        return {"ok": True, "name": os.path.basename(p)}
+    raise HTTPException(400, "أمر غير معروف")
+
+
+@app.get("/api/backup")
+async def backup_download(req: Request):
+    auth(req)
+    path = os.path.join(maintenance.BACKUP_DIR, "download.db.gz")
+    await asyncio.to_thread(maintenance.make_gz, path)
+    data = open(path, "rb").read()
+    os.remove(path)
+    name = f"agent-backup-{time.strftime('%Y-%m-%d')}.db.gz"
+    return Response(data, media_type="application/gzip", headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+@app.post("/api/restore")
+async def backup_restore(req: Request):
+    auth(req)
+    data = await req.body()
+    if len(data) > 300 * 1024 * 1024:
+        raise HTTPException(400, "الملف كبير جداً")
+    try:
+        await asyncio.to_thread(maintenance.restore, data)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    asyncio.get_event_loop().call_later(1.0, lambda: os._exit(0))  # إعادة تشغيل لتحميل الذاكرة المستعادة
+    return {"ok": True}
+
+
 @app.post("/api/notify")
 async def notify_ctl(req: Request):
     auth(req)
@@ -254,6 +304,13 @@ async def control(req: Request):
             raise HTTPException(400, "أضف مفاتيح API في ملف .env أولاً")
         if agent.broker and agent.broker.positions:
             raise HTTPException(400, "أغلق الصفقات المفتوحة (زر الطوارئ) قبل تغيير الوضع")
+        if m == "live":
+            ts = execution.testnet_status()
+            if not ts["passed"]:
+                raise HTTPException(400, f"المال الحقيقي مقفل حتى تكتمل مرحلة Testnet: "
+                                         f"{ts['days']:.1f}/{ts['need_days']} أيام و{ts['trades']}/{ts['need_trades']} صفقات")
+        if m == "testnet":
+            execution.mark_testnet_start()
         memory.kv_set("mode", m)
         memory.log_event(f"🔁 تغيير الوضع إلى {m.upper()} — إعادة تشغيل")
         asyncio.get_event_loop().call_later(1.0, lambda: os._exit(0))  # Docker يعيد التشغيل

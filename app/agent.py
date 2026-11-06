@@ -18,13 +18,14 @@ from . import smc as smc_mod
 from .strategies import run_all, apply_orderflow, features, metrics, STRATEGY_AR, STRATEGIES, ORIGINAL
 from .cross import add_btc_link, add_rs, add_funding, rs_panel
 from .darwin import accepts
-from . import study
+from . import study, execution
 from .mood import Mood
 from .council import deliberate
 from .darwin import Darwin, GENE_AR
 from .ghosts import Ghosts
 from .radar import WhaleRadar
 from .explorer import Explorer
+from .onchain import OnChain
 from .orderflow import LiquidationTracker, snapshot
 from .learner import Learner, simulate_trade
 from .risk import RiskManager
@@ -65,6 +66,8 @@ class Agent:
         self.learner = Learner()
         self.liq = LiquidationTracker()
         self.mood = Mood()
+        self.onchain = OnChain()
+        self.mood.onchain = self.onchain
         self.darwin = Darwin(list(STRATEGIES))
         self.ghosts = Ghosts()
         self.explorer = Explorer(on_close=self._explorer_closed)
@@ -118,6 +121,8 @@ class Agent:
                 self.risk.freeze("مفتاح API يملك صلاحية السحب", manual=True)
             self.broker = LiveBroker(self.spot, self.fut, self.mode)
         memory.log_event(f"🚀 بدأ الوكيل في وضع {self.mode.upper()}")
+        if self.mode == "testnet":
+            execution.mark_testnet_start()
         asyncio.create_task(self.liq.run())
         asyncio.create_task(self.radar.run())
         asyncio.create_task(self.mood_loop())
@@ -377,9 +382,55 @@ class Agent:
                     continue  # صفقة ميمية واحدة كحد أقصى
             if sig.side == "short" and not has_futures(self.fut, sym):
                 continue  # لا يوجد عقد Futures مطابق => شراء فقط
-            await self.open_position(sym, ctx, sig, conf, feats, why, slots, cn)
+            ok, cmult, cnote = self.correlation_check(sym, sig.side)
+            if not ok:
+                self._throttled(f"corr_{sym}", 3600, f"🔗 تجاوز {sym}: {cnote}")
+                continue
+            await self.open_position(sym, ctx, sig, conf, feats, why, slots, cn, cmult, cnote)
 
-    async def open_position(self, sym, ctx, sig, conf, feats, why, slots, cn=None):
+    def correlation_check(self, sym, side):
+        """
+        سقف الارتباط: صفقتان في نفس الاتجاه على عملات تتحرك معاً = مخاطرة واحدة مضاعفة.
+        ارتباط > 0.7 مع صفقتين مفتوحتين بنفس الاتجاه => رفض. مع صفقة واحدة => حجم ×0.6.
+        """
+        base = sym.split("/")[0]
+        a = self._closes1h.get(base)
+        if a is None or len(a) < 60:
+            return True, 1.0, ""
+        ra = a.pct_change()
+        hits = []
+        for p in self.broker.positions.values():
+            if p["side"] != side or p["symbol"] == sym:
+                continue
+            b = self._closes1h.get(p["symbol"].split("/")[0])
+            if b is None:
+                continue
+            rb = b.pct_change()
+            j = ra.to_frame("a").join(rb.to_frame("b"), how="inner").dropna().iloc[-168:]
+            if len(j) < 48:
+                continue
+            c = float(j["a"].corr(j["b"]))
+            if c > 0.7:
+                hits.append((p["symbol"].split("/")[0], c))
+        if len(hits) >= 2:
+            return False, 0.0, "مرتبطة بقوة مع " + "، ".join(f"{h} ({c:.2f})" for h, c in hits) + " بنفس الاتجاه"
+        if len(hits) == 1:
+            return True, 0.6, f"🔗 حجم ×0.6: مرتبطة مع {hits[0][0]} ({hits[0][1]:.2f}) المفتوحة بنفس الاتجاه"
+        return True, 1.0, ""
+
+    def edge_multiplier(self, strategy, regime):
+        """التحجيم بالأدلة: الاستراتيجية ذات الأداء المثبت تأخذ حجماً أكبر (0.6–1.4) ضمن سقف المخاطرة."""
+        with self.learner.lock:
+            arm = dict(self.learner.arms.get(f"{strategy}|{regime}", {}))
+        if arm.get("n", 0) < 20:
+            return 1.0, ""
+        score = self.learner.score(strategy, regime, sample=False)
+        m = max(0.6, min(1.4, 0.5 + score))
+        if abs(m - 1) < 0.05:
+            return 1.0, ""
+        return m, f"📏 حجم ×{m:.2f} بناءً على أداء {'مثبت' if m > 1 else 'ضعيف'} للاستراتيجية في هذه الحالة"
+
+    async def open_position(self, sym, ctx, sig, conf, feats, why, slots, cn=None, cmult=1.0, cnote=""):
         price = self.prices.get(sym, sig.entry)
         # إعادة حساب الوقف والهدف على السعر الحالي بنفس المسافات، ثم تطبيق جينات داروين للبطل
         genome = self.darwin.champion(sig.strategy)
@@ -392,7 +443,9 @@ class Agent:
         open_notional = sum(p["notional"] for p in self.broker.positions.values())
         meme = self.is_meme(sym)
         spot_only = not has_futures(self.fut, sym)
-        sz = self.risk.size(self.equity, price, sig.stop, conf, atr / price, open_notional, slots, meme=meme)
+        emult, enote = self.edge_multiplier(sig.strategy, ctx["regime"]["regime"])
+        sz = self.risk.size(self.equity, price, sig.stop, conf, atr / price, open_notional, slots, meme=meme,
+                            mult=emult * cmult)
         if not sz or sz["notional"] < 6:
             return
         if spot_only:
@@ -413,10 +466,20 @@ class Agent:
         pos = {"symbol": sym, "market": market, "side": sig.side, "qty": sz["qty"], "leverage": sz["leverage"],
                "stop": sig.stop, "init_stop": sig.stop, "target": sig.target, "atr": atr,
                "strategy": sig.strategy, "regime": ctx["regime"]["regime"], "features": feats,
-               "reasons": sig.reasons + [why], "risk_usd": sz["risk_usd"], "conf": conf,
+               "reasons": sig.reasons + [why] + [x for x in (enote, cnote) if x], "risk_usd": sz["risk_usd"], "conf": conf,
                "genome": genome, "council": cn, "meme": meme}
         try:
-            pos = await self.broker.open(pos, price)
+            if self.mode == "paper":
+                fill, fee_rate = None, None
+                if market == "futures" and settings.limit_entries:
+                    fill, fee_rate = await self._paper_limit(sym, sig.side, price)
+                pos = await self.broker.open(pos, price, fill=fill, fee_rate=fee_rate)
+                execution.record_fill(self.mode, "maker" if fill else "taker", price, pos["entry"], sig.side, pos["notional"])
+            else:
+                pos = await self.broker.open(pos, price)
+                ex_ = pos.get("exec") or {}
+                execution.record_fill(self.mode, "maker" if ex_.get("maker_qty", 0) > ex_.get("taker_qty", 0) else "taker",
+                                      price, pos["entry"], sig.side, pos["notional"])
         except Exception as e:
             memory.log_event(f"❌ فشل فتح {sym}: {e}", "warn")
             return
@@ -427,6 +490,18 @@ class Agent:
         notify.send(f"📈 {side_ar} {sym.split('/')[0]} ({market} x{pos['leverage']})",
                     f"{STRATEGY_AR[sig.strategy]} · ثقة {conf:.0%}\nدخول {pos['entry']:.6g} · وقف {pos['stop']:.6g} · هدف {pos['target']:.6g}\n"
                     f"المخاطرة: {pos['risk_usd']:.2f}$\n" + "، ".join(sig.reasons[:3]), tags=["chart_with_upwards_trend"])
+
+    async def _paper_limit(self, sym, side, price):
+        """محاكاة واقعية لأمر Limit: يُنفذ فقط إذا لمس السعر الحي مستوى الأمر خلال مهلة الانتظار."""
+        d = 1 if side == "long" else -1
+        limit = price * (1 - d * 0.0002)  # داخل أفضل عرض/طلب تقريباً
+        t0 = time.time()
+        while time.time() - t0 < settings.limit_wait_sec:
+            await asyncio.sleep(1)
+            p = self.prices.get(sym)
+            if p and ((d == 1 and p <= limit) or (d == -1 and p >= limit)):
+                return limit, settings.maker_fee
+        return None, None
 
     # ================================================================ الحد الأدنى للصفقة في Binance
     def _min_cost(self, sym, market):
@@ -924,6 +999,7 @@ class Agent:
             try:
                 bases = [s.split("/")[0] for s in self.universe] or ["BTC", "ETH"]
                 await asyncio.to_thread(self.mood.refresh, bases)
+                await asyncio.to_thread(self.onchain.refresh)
             except Exception as e:
                 log.warning(f"mood: {e}")
             await asyncio.sleep(120)
@@ -966,6 +1042,9 @@ class Agent:
             "council_stats": memory.council_stats(self.mode),
             "radar_on": self.radar.connected,
             "explorer": self.explorer.summary(self.prices),
+            "exec": execution.summary(self.mode),
+            "onchain": self.onchain.summary(),
+            "testnet": execution.testnet_status(),
             "realtime": {"on": self.radar.connected and time.time() - self.radar.last_msg < 30,
                          "ticks": self.ticks["n"], "actions": self.ticks["actions"],
                          "next_close": (time.time() // CANDLE + 1) * CANDLE, "fresh": self.fresh_candle()},

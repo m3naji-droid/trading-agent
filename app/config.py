@@ -68,7 +68,10 @@ class Settings:
     memory_similarity: float = _f("MEMORY_SIMILARITY", 0.90)
     min_confidence: float = _f("MIN_CONFIDENCE", 0.55)
 
-    fee_rate: float = _f("FEE_RATE", 0.0005)    # عمولة تقديرية لكل جهة
+    fee_rate: float = _f("FEE_RATE", 0.0005)    # عمولة Taker (أمر Market)
+    maker_fee: float = _f("MAKER_FEE", 0.0002)  # عمولة Maker (أمر Limit) في Futures
+    limit_entries: bool = os.getenv("LIMIT_ENTRIES", "1") == "1"
+    limit_wait_sec: int = _i("LIMIT_WAIT_SEC", 30)
     data_dir: str = os.getenv("DATA_DIR", "data")
 
     timeframes: tuple = ("15m", "1h", "4h", "1d")

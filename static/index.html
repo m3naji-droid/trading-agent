@@ -177,6 +177,7 @@ details.dw summary b::before{content:'◂ ';color:var(--mut);font-size:11px}deta
     <p class="reasons" style="text-align:center">المركز = الآن، الحافة = قبل 30 دقيقة · حجم الفقاعة = حجم الصفقة</p>
     <h2 style="margin-top:14px">صافي تدفق الحيتان (آخر ساعة)</h2><div id="rflow"></div>
   </div>
+  <div class="card"><h2>🔗 On-chain والخيارات</h2><div id="onchain"></div></div>
   <div class="card"><h2>📰 أخبار السوق</h2><div id="news"></div></div>
   <div class="card"><h2>الرسم البياني</h2>
     <div style="display:flex;gap:8px;margin-bottom:10px"><select id="sym" onchange="loadChart()"></select><select id="tf" style="width:90px" onchange="loadChart()"><option>15m</option><option>1h</option><option>4h</option><option>1d</option></select></div>
@@ -192,6 +193,7 @@ details.dw summary b::before{content:'◂ ';color:var(--mut);font-size:11px}deta
     <div class="legend" style="flex-wrap:wrap"><span><i style="background:var(--acc)"></i>الوكيل الحقيقي</span><span><i style="background:var(--up)"></i>🐢 المحافظ</span><span><i style="background:var(--warn)"></i>⚖️ المتوازن</span><span><i style="background:var(--dn)"></i>🔥 المغامر</span></div>
     <div id="ghosts" style="margin-top:8px"></div></div>
   <div class="card"><h2>🏛️ هل المجلس محق؟</h2><div id="cstats"></div></div>
+  <div class="card"><h2>🎲 مونت كارلو — أسوأ سيناريو معقول</h2><div id="mc"></div></div>
   <div class="card"><h2>مقاييس الأداء</h2><div class="grid" id="pk"></div></div>
   <div class="card"><h2>أفضل وأسوأ العملات</h2><div id="bw"></div></div>
   <div class="card"><h2>الأداء حسب ساعة الدخول (بتوقيتك)</h2><div id="hrs"></div></div>
@@ -201,6 +203,7 @@ details.dw summary b::before{content:'◂ ';color:var(--mut);font-size:11px}deta
 
 <section class="tab" id="t-learn">
   <div class="card"><h2>🛡️ الاستراتيجيات والاختبار المخفي</h2><div id="gate"></div></div>
+  <div class="card"><h2>🛠️ الحماية والصيانة</h2><div id="maint"></div></div>
   <div class="card"><h2>🧭 المستكشف — يتعلم بالمشاركة</h2><div id="explorer"></div></div>
   <div class="card"><h2>🧬 داروين — تطوّر الاستراتيجيات</h2><div id="darwin"></div></div>
   <div class="card"><h2>🔔 الإشعارات على الجوال</h2><div id="ntf"></div></div>
@@ -305,7 +308,7 @@ async function loadChart(){const s=$('sym').value;if(!s||!cs)return;try{const d=
 let LOADED_VER=null;
 function hardRefresh(){$('rfb').classList.add('spin');setTimeout(()=>location.reload(),250)}
 function render(s){S=s;if(s.strategy_names)Object.assign(STR,s.strategy_names);try{renderGate(s)}catch(e){console.log(e)}if(s.version){if(LOADED_VER===null)LOADED_VER=s.version;else if(s.version!==LOADED_VER)$('upd').style.display='block'}try{renderPerf(s)}catch(e){console.log(e)}
- for(const[f,a]of[[renderExplorer,s.explorer],[renderMood,s.mood],[renderDarwin,s.darwin],[renderCouncil,s.council_stats]])try{f(a)}catch(e){console.log(e)}
+ for(const[f,a]of[[renderOnchain,s.onchain],[renderMC,(s.perf||{}).monte_carlo],[renderMaint,s],[renderExplorer,s.explorer],[renderMood,s.mood],[renderDarwin,s.darwin],[renderCouncil,s.council_stats]])try{f(a)}catch(e){console.log(e)}
  try{renderGhosts(s)}catch(e){console.log(e)}$('ver').textContent=s.version||'—';
  $('mode').textContent=s.mode.toUpperCase();$('mode').className='pill '+(s.mode==='live'?'w':'on');
  $('run').textContent=s.frozen?'مُجمَّد':s.running?'يعمل':'متوقف';$('run').className='pill '+(s.frozen?'off':s.running?'on':'w');
@@ -383,6 +386,44 @@ function renderGate(s){const g=s.gate;if(!g)return;const st=s.study||{},dr=s.dre
  h+='<p class="reasons" style="margin-top:8px">يتعلم الوكيل من أول 70% من التاريخ، ثم يُختبر على آخر 30% لم يرها. لا يتداول فعلياً إلا بالمعتمدة؛ الباقي يُتابع في الصفقات التجريبية، وتُعتمد إذا أثبتت نفسها حياً (40 فرصة بمتوسط +0.10R).</p>';
  $('gate').innerHTML=h}
 const DW_OPEN=new Set();
+const big=x=>x>=1e9?'$'+f2(x/1e9,1)+'B':x>=1e6?'$'+f2(x/1e6,1)+'M':'$'+f2(x,0);
+function renderOnchain(o){if(!o)return;let h='';const st=o.stable,fl=o.flows;
+ if(st)h+=`<div class="row"><div><b>💵 العملات المستقرة</b><div class="reasons">${st.chg_7d>0.002?'سيولة جديدة تدخل الكريبتو — داعم للصعود':st.chg_7d<-0.002?'سيولة تخرج من الكريبتو — حذر':'مستقرة'}</div></div><div style="text-align:left"><b class="num">${big(st.total)}</b><div style="font-size:11px">أسبوع <span class="num ${st.chg_7d>=0?'up':'dn'}">${pct(st.chg_7d)}</span> · شهر <span class="num ${st.chg_30d>=0?'up':'dn'}">${pct(st.chg_30d)}</span></div></div></div>`;
+ if(fl)h+=`<div class="row"><div><b>🏦 تدفق BTC للمنصات</b><div class="reasons">${fl.net_7d>0?'دخول للمنصات (قد يسبق البيع)':'خروج من المنصات (تجميع وحفظ)'}</div></div><b class="num ${fl.net_7d>0?'dn':'up'}">${fl.net_7d>0?'+':''}${f2(fl.net_7d,0)} BTC/أسبوع</b></div>`;
+ for(const c of['BTC','ETH']){const x=(o.options||{})[c];if(!x||x.pc==null)continue;const mp=x.max_pain,u=x.underlying;
+  const pcTxt=x.pc>1.2?'تشاؤم شديد (فرصة معاكسة)':x.pc>0.9?'حذر':x.pc<0.45?'تفاؤل مفرط':'متوازن';
+  h+=`<div class="ev"><div style="display:flex;justify-content:space-between"><b>🎯 خيارات ${c}</b>${x.dvol?`<span class="chip">التذبذب DVOL <span class="num">${f2(x.dvol.now,0)}</span> <span class="num ${x.dvol.chg_24h>0?'dn':'up'}">${x.dvol.chg_24h>0?'+':''}${f2(x.dvol.chg_24h,1)}</span></span>`:''}</div>
+  <div class="reasons">نسبة Put/Call: <b class="num">${f2(x.pc)}</b> — ${pcTxt}${mp&&u?`<br>Max Pain لانتهاء <span class="num">${new Date(mp.expiry*1000).toLocaleDateString('en-GB',{day:'2-digit',month:'short'})}</span>: <b class="num">${fp(mp.price)}</b> (<span class="num">${pct(mp.price/u-1)}</span> عن السعر) — السعر يميل للاقتراب منه قرب الانتهاء`:''}</div></div>`}
+ if(!h)h='<p class="mut">جارٍ جلب البيانات…</p>';
+ h+='<p class="reasons" style="margin-top:6px">المجلس يستخدمها: «الحذر» يعترض على الشراء إذا تقلصت العملات المستقرة أو تدفق البيتكوين للمنصات، و«المعاكس» يقرأ تشاؤم/تفاؤل الخيارات.</p>';
+ $('onchain').innerHTML=h}
+function renderMC(m){const el=$('mc');if(!m){el.innerHTML='';return}
+ if(!m.ready){el.innerHTML=`<p class="mut">يحتاج 20 صفقة على الأقل (الحالي <span class="num">${m.n}</span>)</p>`;return}
+ const k=(l,v,c='')=>`<div class="kpi"><small>${l}</small><b class="num ${c}">${v}</b></div>`;
+ el.innerHTML=`<p class="reasons" style="margin-bottom:8px">خلطنا نتائج <span class="num">${m.n}</span> صفقة (${m.source}) 2000 مرة لتقدير الـ<span class="num">${m.trades}</span> صفقة القادمة بمخاطرة <span class="num">${f2(m.risk*100,1)}%</span> لكل صفقة:</p>
+ <div class="grid">${k('العائد المتوقع (الوسيط)',pct(m.median),m.median>=0?'up':'dn')}${k('سيناريو سيئ (5%)',pct(m.p5),m.p5>=0?'up':'dn')}${k('احتمال الخسارة',f2(m.p_loss*100,0)+'%')}${k('أقصى تراجع متوقع',f2(m.dd_median*100,1)+'%')}</div>
+ <p class="reasons" style="margin:10px 0 4px">احتمال أن يتراجع رأس المال أكثر من:</p>
+ <div class="grid" style="grid-template-columns:repeat(3,1fr)">${k('10%',f2(m.p_dd10*100,0)+'%')}${k('20%',f2(m.p_dd20*100,0)+'%',m.p_dd20>0.1?'dn':'')}${k('30%',f2(m.p_dd30*100,0)+'%',m.p_dd30>0.05?'dn':'')}</div>
+ <div class="row"><span>أسوأ تراجع في 95% من الحالات</span><b class="num dn">${f2(m.dd_p95*100,1)}%</b></div>
+ <p class="reasons" style="margin-top:6px">ليست توقعاً بل نطاق احتمالات من نتائج الوكيل نفسه. إذا كان احتمال تراجع 20% مرتفعاً، فقلّل رأس المال المخصص أو المخاطرة.</p>`}
+async function mt(a,extra={}){try{const r=await api('/api/maint',{method:'POST',body:JSON.stringify({action:a,...extra})});if(a!=='backup_now')alert(r.ok?'✅ تم — النبضة وصلت للمراقب':'⚠️ لم تصل النبضة — تأكد من الرابط');else alert('✅ أُنشئت نسخة احتياطية على السيرفر');refresh()}catch(e){if(e)alert(e.message)}}
+async function dlBackup(){const b=$('dlb');b.textContent='⏳ جارٍ التجهيز…';try{const r=await fetch('/api/backup',{headers:{'Authorization':'Bearer '+TOKEN}});if(!r.ok)throw 0;const bl=await r.blob();const u=URL.createObjectURL(bl);const a=document.createElement('a');a.href=u;a.download=`agent-backup-${new Date().toISOString().slice(0,10)}.db.gz`;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),5000)}catch(e){alert('تعذر التنزيل')}b.textContent='⬇️ تنزيل نسخة لجوالك'}
+async function doRestore(f){if(!f)return;if(!confirm('سيُستبدل كل تعلّم الوكيل وذاكرته بهذه النسخة (تُحفظ نسخة من الحالي أولاً). متابعة؟'))return;
+ try{const r=await fetch('/api/restore',{method:'POST',headers:{'Authorization':'Bearer '+TOKEN,'Content-Type':'application/octet-stream'},body:await f.arrayBuffer()});const j=await r.json();if(!r.ok)throw new Error(j.detail);alert('✅ تمت الاستعادة — الوكيل يعيد التشغيل خلال ثوانٍ');setTimeout(()=>location.reload(),8000)}catch(e){alert('❌ '+(e.message||'فشلت الاستعادة'))}}
+function renderMaint(s){const t=s.testnet||{},m=s.maint||{},x=s.exec||{};
+ const tp=Math.min(1,(t.days||0)/t.need_days)*0.5+Math.min(1,(t.trades||0)/t.need_trades)*0.5;
+ let h=`<div class="ev"><div style="display:flex;justify-content:space-between"><b>🧪 مرحلة Testnet (إلزامية قبل المال الحقيقي)</b><span class="chip ${t.passed?'up':''}">${t.passed?'✅ مكتملة':t.started?'⏳ جارية':'لم تبدأ'}</span></div>
+ <div class="reasons">${t.started?`<span class="num">${f2(t.days,1)}/${t.need_days}</span> أيام · <span class="num">${t.trades}/${t.need_trades}</span> صفقات حقيقية على الحساب التجريبي`:'أضف مفاتيح Binance Demo Trading ثم غيّر الوضع إلى testnet'}<br>زر الانتقال إلى live مقفل حتى تكتمل.</div>${t.started&&!t.passed?`<div class="bar"><i style="width:${tp*100}%"></i></div>`:''}</div>`;
+ h+=`<div class="ev"><b>⚡ جودة التنفيذ</b><div class="reasons">${x.orders?`أوامر Limit: <span class="num">${f2(x.maker_share*100,0)}%</span> (${x.maker}/${x.orders}) · رسوم موفّرة <span class="num up">$${f2(x.saved)}</span>${x.slip_avg!=null?`<br>متوسط الانزلاق <span class="num">${f2(x.slip_avg,1)}</span> نقطة أساس · الأسوأ <span class="num">${f2(x.slip_max,1)}</span>`:''}`:'لا أوامر بعد'}</div></div>`;
+ h+=`<div class="ev"><div style="display:flex;justify-content:space-between"><b>🩺 المراقب الخارجي</b><span class="chip ${m.hc_set?'up':''}">${m.hc_set?'🟢 مربوط'+(m.hc_last?' · آخر نبضة '+ago(m.hc_last):''):'⚪ غير مربوط'}</span></div>
+ <div class="reasons">ينبهك إذا توقف السيرفر نفسه (الوكيل لا يستطيع تنبيهك إذا مات).</div>
+ <div style="display:flex;gap:6px;margin-top:6px"><input id="hcu" placeholder="https://hc-ping.com/..." style="margin:0;font-size:13px;padding:9px" dir="ltr"><button onclick="mt('hc_set',{url:$('hcu').value})" style="white-space:nowrap">حفظ</button></div>
+ ${m.hc_set?`<button onclick="mt('hc_test')" style="margin-top:6px;width:100%">إرسال نبضة تجريبية</button>`:''}</div>`;
+ h+=`<div class="ev"><b>💾 النسخ الاحتياطي</b><div class="reasons">نسخة تلقائية يومياً على السيرفر (آخر 7 أيام)${m.backups&&m.backups.length?` · آخرها <span class="num">${m.backups[0].name}</span> (<span class="num">${m.backups[0].mb}MB</span>)`:''}<br>نزّل نسخة لجوالك أسبوعياً — تحميك حتى لو حُذف السيرفر.</div>
+ <div class="btns" style="margin-top:8px"><button id="dlb" class="pri" onclick="dlBackup()">⬇️ تنزيل نسخة لجوالك</button><button onclick="mt('backup_now')">💾 نسخة على السيرفر الآن</button>
+ <button style="grid-column:1/-1" onclick="$('rsf').click()">⬆️ استعادة من نسخة</button></div><input type="file" id="rsf" accept=".gz,.db" style="display:none" onchange="doRestore(this.files[0])"></div>`;
+ const keep=document.activeElement&&document.activeElement.id==='hcu'?$('hcu').value:null;
+ if(keep!==null)return; $('maint').innerHTML=h}
 function renderExplorer(x){if(!x)return;
  const k=(l,v,c='')=>`<div class="kpi"><small>${l}</small><b class="num ${c}">${v}</b></div>`;
  let h=`<div class="grid">${k('صفقات مغلقة',x.trades)}${k('مفتوحة الآن',x.open+'/'+x.max_pos)}${k('نسبة الربح',f2(x.winrate*100,0)+'%')}${k('متوسط الصفقة',f2(x.avg_r)+'R',x.avg_r>=0?'up':'dn')}</div>

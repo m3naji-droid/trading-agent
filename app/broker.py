@@ -4,6 +4,7 @@
 - LiveBroker : تنفيذ فعلي على Binance (testnet أو حقيقي) مع وقف خسارة على المنصة نفسها،
                حتى لو توقف السيرفر تبقى الصفقة محمية.
 """
+import asyncio
 import logging
 import time
 import uuid
@@ -41,15 +42,17 @@ class PaperBroker:
     def used_margin(self):
         return sum(p["notional"] / p["leverage"] for p in self.positions.values())
 
-    async def open(self, pos: dict, price: float):
+    async def open(self, pos: dict, price: float, fill=None, fee_rate=None):
+        """fill/fee_rate: عند تنفيذ أمر Limit افتراضي (Maker) يمرره الوكيل."""
         d = 1 if pos["side"] == "long" else -1
-        fill = price * (1 + d * SLIPPAGE)
+        fill = fill if fill else price * (1 + d * SLIPPAGE)
+        fee_rate = settings.fee_rate if fee_rate is None else fee_rate
         notional = pos["qty"] * fill
         if self.used_margin() + notional / pos["leverage"] > self.balance:
             raise RuntimeError("هامش غير كافٍ")
-        self.balance -= notional * settings.fee_rate
+        self.balance -= notional * fee_rate
         pos |= {"id": uuid.uuid4().hex[:10], "entry": fill, "notional": notional, "opened": time.time(),
-                "best": fill, "fees": notional * settings.fee_rate}
+                "best": fill, "fees": notional * fee_rate}
         self.positions[pos["id"]] = pos
         self._save()
         return pos
@@ -152,6 +155,29 @@ class LiveBroker(PaperBroker):
         m = ex.markets.get(sym, {})
         return float(((m.get("limits") or {}).get("cost") or {}).get("min") or 5)
 
+    async def _limit_entry(self, ex, sym, side, qty, price):
+        """أمر Limit يُضاف لدفتر الأوامر فقط (Post-Only) عند أفضل سعر — رسوم Maker أقل.
+        يرجع (الكمية المنفذة, متوسط السعر)."""
+        ob = await ex.fetch_order_book(sym, limit=5)
+        px = (ob["bids"][0][0] if side == "buy" else ob["asks"][0][0]) if ob.get("bids") and ob.get("asks") else price
+        px = float(ex.price_to_precision(sym, px))
+        o = await ex.create_order(sym, "limit", side, qty, px, {"timeInForce": "GTX"})
+        oid = o.get("id")
+        t0 = time.time()
+        while time.time() - t0 < settings.limit_wait_sec:
+            await asyncio.sleep(3)
+            o = await ex.fetch_order(oid, sym)
+            if float(o.get("filled") or 0) >= qty * 0.999 or o.get("status") in ("closed", "canceled", "expired"):
+                break
+        if o.get("status") not in ("closed",):
+            try:
+                await ex.cancel_order(oid, sym)
+                o = await ex.fetch_order(oid, sym)
+            except Exception:
+                pass
+        filled = float(o.get("filled") or 0)
+        return filled, float(o.get("average") or px)
+
     async def open(self, pos, price):
         ex, sym = self._ex(pos)
         side = "buy" if pos["side"] == "long" else "sell"
@@ -165,15 +191,31 @@ class LiveBroker(PaperBroker):
             except Exception as e:
                 log.warning(f"set_leverage: {e}")
         qty = float(ex.amount_to_precision(sym, pos["qty"]))
-        if qty * price < self.min_cost(pos["symbol"], pos["market"]):
+        mc = self.min_cost(pos["symbol"], pos["market"])
+        if qty * price < mc:
             raise RuntimeError("الحجم أقل من الحد الأدنى للمنصة")
-        o = await ex.create_order(sym, "market", side, qty)
-        fill = float(o.get("average") or o.get("price") or price)
-        filled = float(o.get("filled") or qty)
+        m_qty, m_px = 0.0, 0.0
+        if pos["market"] == "futures" and settings.limit_entries:
+            try:
+                m_qty, m_px = await self._limit_entry(ex, sym, side, qty, price)
+            except Exception as e:
+                log.warning(f"limit entry {sym}: {e}")
+        rest = float(ex.amount_to_precision(sym, max(0.0, qty - m_qty))) if qty - m_qty > 0 else 0.0
+        t_qty, t_px = 0.0, 0.0
+        if rest > 0 and rest * price >= mc:
+            o = await ex.create_order(sym, "market", side, rest)
+            t_px = float(o.get("average") or o.get("price") or price)
+            t_qty = float(o.get("filled") or rest)
+        filled = m_qty + t_qty
+        if filled <= 0:
+            raise RuntimeError("لم يُنفذ أي جزء من أمر الدخول")
+        fill = (m_qty * m_px + t_qty * t_px) / filled
+        pos["exec"] = {"maker_qty": m_qty, "taker_qty": t_qty, "expected": price}
         if pos["market"] == "spot":
             filled *= (1 - 0.001)  # عمولة spot تُخصم من العملة المشتراة
         pos |= {"id": uuid.uuid4().hex[:10], "entry": fill, "qty": filled, "notional": filled * fill,
-                "opened": time.time(), "best": fill, "fees": filled * fill * settings.fee_rate}
+                "opened": time.time(), "best": fill,
+                "fees": pos["exec"]["maker_qty"] * fill * settings.maker_fee + pos["exec"]["taker_qty"] * fill * settings.fee_rate}
         try:
             await self._place_stop(pos)
         except Exception as e:

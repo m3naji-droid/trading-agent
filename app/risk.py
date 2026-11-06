@@ -32,12 +32,17 @@ class RiskManager:
         x = max(0.0, min(1.0, (confidence - lo) / (hi - lo)))
         return settings.risk_min + x * (settings.risk_max - settings.risk_min)
 
-    def size(self, equity, entry, stop, confidence, atr_pct, open_notional, slots_left, meme=False):
+    def size(self, equity, entry, stop, confidence, atr_pct, open_notional, slots_left, meme=False, mult=1.0):
+        """mult: مضاعف الحجم من الأدلة (أداء الاستراتيجية) والارتباط مع الصفقات المفتوحة."""
         """
         يحدد الكمية والرافعة والسوق (spot/futures).
         الرافعة يقررها الوكيل حسب الثقة والتذبذب، بسقف صارم MAX_LEVERAGE.
         """
-        rp = self.risk_pct(confidence) * (settings.meme_risk_mult if meme else 1.0)
+        meme_k = settings.meme_risk_mult if meme else 1.0
+        base = self.risk_pct(confidence)
+        if self.loss_streak >= settings.loss_streak_trigger:
+            mult = min(mult, 1.0)  # بعد سلسلة خسائر: لا تكبير مهما كانت الأدلة
+        rp = min(base * mult, settings.risk_max) * meme_k
         risk_usd = equity * rp
         dist = abs(entry - stop)
         if dist <= 0 or equity <= 0:

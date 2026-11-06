@@ -101,9 +101,41 @@ def summary(mode: str) -> dict:
         "weekly": [{"k": k, "pnl": v} for k, v in sorted(weekly.items())][-8:],
         "monthly": [{"k": k, "pnl": v} for k, v in sorted(monthly.items())][-6:],
         "readiness": {"status": status, "passed": passed, "total": len(items), "items": items},
+        "monte_carlo": monte_carlo(mode),
     }
     _cache.update(t=time.time(), mode=mode, v=v)
     return v
+
+
+def monte_carlo(mode: str, n_paths=2000, n_trades=100):
+    """
+    محاكاة مونت كارلو: نعيد خلط نتائج الصفقات الفعلية آلاف المرات لنقدّر
+    "أسوأ سيناريو معقول" للـ100 صفقة القادمة (ليس توقعاً — بل نطاق احتمالات).
+    """
+    import numpy as np
+    from .config import settings
+    rs = [t["r_mult"] for t in memory.real_trades(mode) if t["r_mult"] is not None]
+    src = "صفقات الوكيل الفعلية"
+    if len(rs) < 20:
+        with memory._conn() as c:
+            rows = c.execute("SELECT r_mult FROM trades WHERE market='explore' AND mode=? AND closed IS NOT NULL "
+                             "ORDER BY closed DESC LIMIT 2000", (mode,)).fetchall()
+        rs = [r[0] for r in rows if r[0] is not None]
+        src = "صفقات المستكشف (لا توجد صفقات فعلية كافية بعد)"
+    if len(rs) < 20:
+        return {"ready": False, "n": len(rs), "need": 20}
+    r = np.clip(np.array(rs, dtype=float), -3, 10)
+    risk = (settings.risk_min + settings.risk_max) / 2
+    rng = np.random.default_rng(7)
+    sample = rng.choice(r, size=(n_paths, n_trades), replace=True)
+    eq = np.cumprod(1 + sample * risk, axis=1)
+    peak = np.maximum.accumulate(np.concatenate([np.ones((n_paths, 1)), eq], axis=1), axis=1)[:, 1:]
+    dd = (1 - eq / peak).max(axis=1)
+    fin = eq[:, -1] - 1
+    return {"ready": True, "n": len(rs), "source": src, "trades": n_trades, "risk": risk,
+            "median": float(np.median(fin)), "p5": float(np.percentile(fin, 5)), "p95": float(np.percentile(fin, 95)),
+            "p_loss": float((fin < 0).mean()), "dd_median": float(np.median(dd)), "dd_p95": float(np.percentile(dd, 95)),
+            "p_dd10": float((dd > 0.10).mean()), "p_dd20": float((dd > 0.20).mean()), "p_dd30": float((dd > 0.30).mean())}
 
 
 def daily_report(mode: str, equity: float, extra: str = "") -> tuple[str, str]:

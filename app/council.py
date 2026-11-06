@@ -65,6 +65,12 @@ def cautious(sig, ctx, risk, pattern, mood, base):
         ms = mood.market_score()
         if ms < -0.35 and d == 1:
             concerns.append("معنويات الأخبار سلبية")
+        oc = getattr(mood, "onchain", None)
+        if oc is not None and d == 1:
+            if oc.stable and oc.stable["chg_7d"] < -0.01:
+                concerns.append(f"العملات المستقرة تتقلص ({oc.stable['chg_7d']:+.1%} أسبوعياً) — سيولة تخرج")
+            if oc.flows and oc.flows["net_7d"] > 15000:
+                concerns.append("بيتكوين يتدفق بكثافة إلى المنصات (ضغط بيع محتمل)")
     yes = not severe and len(concerns) < 2
     return _vote("cautious", yes, concerns or ["لا مخاطر واضحة"])
 
@@ -92,6 +98,15 @@ def contrarian(sig, ctx, mood):
     rsi = l.get("rsi", 50)
     if sig.strategy == "momentum_breakout" and ((d == 1 and rsi > 75) or (d == -1 and rsi < 25)):
         crowd.append(f"الحركة ممتدة جداً (RSI {rsi:.0f})")
+    oc = getattr(mood, "onchain", None) if mood is not None else None
+    pc = oc.pc() if oc is not None else None
+    if pc is not None:
+        if d == 1 and pc > 1.2:
+            edge.append(f"الخيارات متشائمة جداً (Put/Call {pc:.2f}) — فرصة معاكسة")
+        elif d == 1 and pc < 0.45:
+            crowd.append(f"الخيارات متفائلة جداً (Put/Call {pc:.2f})")
+        elif d == -1 and pc > 1.2:
+            crowd.append(f"الخيارات متشائمة جداً (Put/Call {pc:.2f}) — البيع مزدحم")
     liq = (flow.get("liq") or {}).get("bias", 0) * d
     if liq > 0.5:
         edge.append("تصفيات الطرف الآخر تدعم الحركة")
