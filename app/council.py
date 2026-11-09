@@ -34,6 +34,11 @@ def bold(sig, ctx, conf):
     vz = l.get("vol_z", 0) or 0
     if vz > 1:
         good += 0.5; r.append("حجم تداول قوي")
+    meta = ctx.get("meta") or {}
+    if meta.get("ml") is not None and meta["ml"] >= 0.6:
+        good += 0.5; r.append(f"الحَكَم الذكي متفائل ({meta['ml']:.0%})")
+    if meta.get("cons", 1) >= 2:
+        good += 0.5; r.append(f"{int(meta['cons'])} استراتيجيات متفقة")
     return _vote("bold", good >= 2, r)
 
 
@@ -65,6 +70,9 @@ def cautious(sig, ctx, risk, pattern, mood, base):
         ms = mood.market_score()
         if ms < -0.35 and d == 1:
             concerns.append("معنويات الأخبار سلبية")
+        mx = getattr(mood, "macro", None) or {}
+        if mx.get("extreme"):
+            concerns.append("اضطراب في الأسواق العالمية")
         smm = getattr(mood, "smart_m", 0.0) or 0.0
         if smm * d < -0.4:
             concerns.append("المال الكبير يتحرك عكس الصفقة")
@@ -74,6 +82,13 @@ def cautious(sig, ctx, risk, pattern, mood, base):
                 concerns.append(f"العملات المستقرة تتقلص ({oc.stable['chg_7d']:+.1%} أسبوعياً) — سيولة تخرج")
             if oc.flows and oc.flows["net_7d"] > 15000:
                 concerns.append("بيتكوين يتدفق بكثافة إلى المنصات (ضغط بيع محتمل)")
+    meta = ctx.get("meta") or {}
+    if meta.get("ml") is not None and meta["ml"] <= 0.38:
+        concerns.append(f"الحَكَم الذكي: تشبه صفقات خاسرة ({meta['ml']:.0%})")
+    if (meta.get("top") or 0) < -0.25:
+        concerns.append("كبار متداولي Binance في الاتجاه المعاكس")
+    if (meta.get("magnet") or 0) < -0.5:
+        concerns.append("منطقة تصفية كبيرة تجذب السعر عكس الصفقة")
     yes = not severe and len(concerns) < 2
     return _vote("cautious", yes, concerns or ["لا مخاطر واضحة"])
 
@@ -110,6 +125,14 @@ def contrarian(sig, ctx, mood):
             crowd.append(f"الخيارات متفائلة جداً (Put/Call {pc:.2f})")
         elif d == -1 and pc > 1.2:
             crowd.append(f"الخيارات متشائمة جداً (Put/Call {pc:.2f}) — البيع مزدحم")
+    meta = ctx.get("meta") or {}
+    cr = meta.get("crowd") or 0  # لوغاريتم نسبة الجمهور × اتجاه الصفقة
+    if cr > 0.9:
+        crowd.append("الجمهور على Binance مكدّس في نفس الاتجاه")
+    elif cr < -0.6 and (meta.get("top") or 0) > 0.1:
+        edge.append("الجمهور عكس الصفقة والكبار معها")
+    if (meta.get("magnet") or 0) > 0.5:
+        edge.append("🧲 منطقة تصفية تجذب السعر باتجاه الصفقة")
     liq = (flow.get("liq") or {}).get("bias", 0) * d
     if liq > 0.5:
         edge.append("تصفيات الطرف الآخر تدعم الحركة")

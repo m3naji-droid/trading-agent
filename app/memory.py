@@ -48,6 +48,10 @@ def init():
             c.execute("ALTER TABLE trades ADD COLUMN council TEXT")
         except sqlite3.OperationalError:
             pass
+        try:
+            c.execute("ALTER TABLE trades ADD COLUMN meta TEXT")
+        except sqlite3.OperationalError:
+            pass
 
 
 # ------------------------------------------------------------------ أدوات عامة
@@ -118,11 +122,12 @@ def equity_curve(since_sec=30 * 86400, mode=None):
 def save_trade(t: dict) -> int:
     cols = ["symbol", "market", "strategy", "side", "regime", "features", "reasons", "entry", "stop",
             "target", "qty", "leverage", "exit", "pnl", "r_mult", "exit_reason", "opened", "closed",
-            "mode", "shadow", "council"]
+            "mode", "shadow", "council", "meta"]
     row = {k: t.get(k) for k in cols}
     row["features"] = json.dumps(row["features"] or [])
     row["reasons"] = json.dumps(row["reasons"] or [], ensure_ascii=False)
     row["council"] = json.dumps(row["council"], ensure_ascii=False) if row["council"] else None
+    row["meta"] = json.dumps(row["meta"], default=_jsonable) if row["meta"] else None
     with _lock, _conn() as c:
         cur = c.execute(f"INSERT INTO trades({','.join(cols)}) VALUES({','.join('?' * len(cols))})",
                         [row[k] for k in cols])
@@ -139,6 +144,7 @@ def recent_trades(limit=50, shadow=0):
         d["reasons"] = json.loads(d["reasons"] or "[]")
         d["council"] = json.loads(d["council"]) if d.get("council") else None
         d.pop("features", None)
+        d.pop("meta", None)
         out.append(d)
     return out
 

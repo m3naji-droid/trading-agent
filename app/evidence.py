@@ -24,7 +24,7 @@ from .smartmoney import SOURCES, _get, parse_farside, tanh
 log = logging.getLogger("evidence")
 SAMPLE_SEC = 4 * 3600
 HORIZON = {"etf": 24, "premium": 24, "stables": 72, "whales": 24, "corporate": 72, "cot": 168,
-           "polymarket": 24, "options": 24}
+           "polymarket": 24, "options": 24, "macro": 24, "toptraders": 24}
 MIN_N, MIN_T, MAX_W = 30, 2.0, 0.6
 EV_MIN_N = 8
 EVENT_SOURCES = ("listings", "unlocks", "corporate")
@@ -48,6 +48,7 @@ class SmartMoney:
         st = self.state
         st["btc_binance"] = ctx.get("btc")
         st["radar_flow"] = ctx.get("radar_flow")
+        st["top_btc"] = ctx.get("top_btc")
         st["names"] = ctx.get("names", {})
         st["tradable"] = ctx.get("tradable", set())
         st["whale_key"] = memory.kv_get("whale_key") or os.getenv("WHALE_ALERT_KEY", "")
@@ -72,7 +73,7 @@ class SmartMoney:
         if now - self._last_eval > 3600:
             self._last_eval = now
             self.evaluate(ctx.get("prices", {}))
-        memory.kv_set("sm_state", {k: v for k, v in st.items() if k not in ("tradable", "names", "radar_flow")})
+        memory.kv_set("sm_state", {k: v for k, v in st.items() if k not in ("tradable", "names", "radar_flow", "top_btc")})
 
     def _log_btc(self, p):
         h = int(time.time() // 3600) * 3600

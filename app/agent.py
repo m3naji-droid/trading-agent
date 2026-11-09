@@ -29,6 +29,10 @@ from .explorer import Explorer
 from .onchain import OnChain
 from . import exits
 from .evidence import SmartMoney
+from .precision import Precision, session_of
+from .autopsy import Autopsy, CATS as AUTOPSY_CATS, FIXES as AUTOPSY_FIXES
+from .positioning import Positioning
+from .macro import Rotation
 from .orderflow import LiquidationTracker, snapshot
 from .learner import Learner, simulate_trade
 from .risk import RiskManager
@@ -43,6 +47,19 @@ FRESH_WINDOW = 150    # يُسمح بالدخول فقط خلال أول دقي�
 EXIT_AR = {"guard": "حارس الأرباح", "giveback": "قاعدة إرجاع الربح", "breakeven": "وقف التعادل بعد ربح جزئي",
            "exchange_target": "هدف المنصة", "stop": "وقف الخسارة", "trailing": "الوقف المتحرك", "target": "الهدف", "timeout": "انتهاء المدة",
            "kill": "مفتاح الطوارئ", "regime": "تغيّر حالة السوق", "exchange_stop": "وقف المنصة"}
+
+
+def mtf_dir(h4):
+    """اتجاه إطار 4 ساعات: +1 صاعد، -1 هابط، 0 غير واضح."""
+    try:
+        l = h4.iloc[-1]
+        if l["close"] > l["ema50"] and l["ema20"] > l["ema50"]:
+            return 1
+        if l["close"] < l["ema50"] and l["ema20"] < l["ema50"]:
+            return -1
+    except Exception:
+        pass
+    return 0
 
 
 def memory_usage():
@@ -72,6 +89,10 @@ class Agent:
         self.mood = Mood()
         self.onchain = OnChain()
         self.smart = SmartMoney()
+        self.precision = Precision()
+        self.autopsy = Autopsy()
+        self.positioning = Positioning()
+        self.rotation = Rotation(memory)
         self.mood.onchain = self.onchain
         self.darwin = Darwin(list(STRATEGIES))
         self.ghosts = Ghosts()
@@ -135,6 +156,7 @@ class Agent:
         asyncio.create_task(self.radar.run())
         asyncio.create_task(self.mood_loop())
         asyncio.create_task(self.smart_loop())
+        asyncio.create_task(self.precision_loop())
         asyncio.create_task(self.loop())
 
     async def loop(self):
@@ -284,11 +306,12 @@ class Agent:
             self._closes1h[base] = e1.set_index("ts")["close"].iloc[-200:]
             reg = detect_regime(e1)
             ctx = {"df": e15, "htf": e1, "ttf": h4, "regime": reg, "smc": smc_mod.analyze(e15), "flow": None,
-                   "base": base, "liq": liq}
+                   "base": base, "liq": liq, "mtf": mtf_dir(h4) if h4 is not None else 0}
             self._lastbars[sym] = e15.iloc[-2:].copy()
             strict = run_all(ctx)
             got = {x.strategy for x in strict}
             near = [x for x in run_all({**ctx, "relax": True}) if x.strategy not in got]
+            ctx["near_sides"] = [x.side for x in near]
             return ctx, strict, near
 
         ctx, sigs, near = await asyncio.to_thread(compute)
@@ -309,13 +332,19 @@ class Agent:
             "signals": [x.strategy for x in sigs], "learned": sym in self.pretrained,
             "rank": (self.rank_info.get(sym) or {}).get("rank"),
             "rs": self.rs_rank.get(base), "near": [x.strategy for x in near], "meme": self.is_meme(sym),
+            "mtf": ctx.get("mtf", 0), "pos": self.positioning.summary(sym),
         }
         return [(sym, ctx, sg) for sg in sigs]
 
     # ================================================================ القرار
     async def decide(self, cands):
         sm_m, _ = self.smart.market_score()
+        macro = (self.smart.sig.get("macro") or {})
+        self.mood.macro = macro.get("data") or {}
         self.last_scan = {"ts": time.time(), "signals": len(cands), "coins": len(self.universe)}
+        sides = collections.defaultdict(list)
+        for sym, ctx, sig in cands:
+            sides[sym].append(sig.side)
         open_syms = {p["symbol"] for p in self.broker.positions.values()}
         scored = []
         for sym, ctx, sig in cands:
@@ -333,12 +362,40 @@ class Agent:
                 sig.reasons.append(f"🕵️ المال الكبير {'يدعم' if sm_adj > 0 else 'يعاكس'} الصفقة")
             self.mood.smart_m = sm_m
             feats = features(ctx, sig)
+            base = sym.split("/")[0]
+            # 🎯 أدوات الدقة: بصمة السياق الكامل + تصحيح الثقة + الحَكَم الذكي
+            same = sides[sym].count(sig.side) + 0.5 * (ctx.get("near_sides") or []).count(sig.side)
+            pv = self.positioning.view(sym)
+            fng = (self.mood.fng or {}).get("value")
+            meta = {"conf": round(conf, 4), "cons": same, "conflict": sum(1 for x in sides[sym] if x != sig.side),
+                    "mtf": (ctx.get("mtf") or 0) * d_, "top": pv.get("top", 0.0) * d_, "crowd": pv.get("crowd", 0.0) * d_,
+                    "top_chg": pv.get("top_chg", 0.0) * d_, "magnet": pv.get("magnet", 0.0) * d_,
+                    "macro": (macro.get("s") or 0.0) * d_,
+                    "rot": (self.rotation.state.get("alt_vs_btc") or 0.0) * d_ * (0 if base == "BTC" else 1),
+                    "smart": sm_m * d_, "fng": ((fng - 50) / 50 * d_) if fng is not None else 0.0,
+                    "sess": session_of(time.time()), "hour": datetime.now(timezone.utc).hour}
+            conf, cnote_ = self.precision.calibrate(conf)
+            if cnote_:
+                sig.reasons.append(cnote_)
+            s_mult, s_adj, s_note = self.precision.session_adj()
+            r_adj, r_note = self.rotation.adjust(base, sig.side)
+            conf = max(0.0, min(1.0, conf + s_adj + r_adj))
+            for n_ in (s_note, r_note):
+                if n_:
+                    sig.reasons.append(n_)
+            ml_p, ml_adj, ml_note = self.precision.predict(feats, meta, sig.strategy, sig.side, sig.rr, time.time())
+            if ml_note:
+                conf = max(0.0, min(1.0, conf + ml_adj))
+                sig.reasons.append(ml_note)
+            meta["ml"] = ml_p
+            ctx["meta"], ctx["pos"] = meta, pv
             allowed, why, pstats = memory.check_pattern(sig.strategy, sig.side, feats)
             cn = deliberate(sig, ctx, conf, self.risk, pstats, self.mood, sym.split("/")[0])
-            self._open_shadow(sym, ctx, sig, feats, cn)
+            self._open_shadow(sym, ctx, sig, feats, cn, meta=meta)
             self.analysis[sym]["last_decision"] = {"strategy": STRATEGY_AR[sig.strategy], "side": sig.side,
                                                    "conf": round(conf, 2), "memory": why, "allowed": allowed,
-                                                   "council": cn["yes"], "votes": [v["icon"] + ("✓" if v["vote"] else "✗") for v in cn["votes"]]}
+                                                   "council": cn["yes"], "votes": [v["icon"] + ("✓" if v["vote"] else "✗") for v in cn["votes"]],
+                                                   "ml": round(ml_p, 2) if ml_p is not None else None}
             if sym in self.pretrained and allowed and self.fresh_candle() and accepts(self.darwin.champion(sig.strategy), metrics(ctx, sig)):
                 self.ghosts.consider(sym, sig, conf, cn["yes"], price, float(ctx["df"]["atr"].iloc[-1]),
                                      self.darwin.champion(sig.strategy), self.market_risk_off,
@@ -347,7 +404,7 @@ class Agent:
             if self.fresh_candle():  # المستكشف يدخل حتى ما رفضه المجلس أو الذاكرة — ليتعلم منه
                 self.explorer.consider(sym, sig, ctx, price, self.darwin.champion(sig.strategy), False,
                                        {"features": feats, "regime": ctx["regime"]["regime"], "council": cn,
-                                        "reasons": sig.reasons + [why]})
+                                        "reasons": sig.reasons + [why], "meta": meta})
             if not allowed:
                 memory.log_event(f"🧠 رفض {sym} {STRATEGY_AR[sig.strategy]}: {why}")
                 self.blocks.append((time.time(), "memory"))
@@ -357,6 +414,18 @@ class Agent:
                 self.blocks.append((time.time(), "unlock"))
                 self._throttled(f"unlock_{sym}", 6 * 3600, f"🔓 تجاوز شراء {sym}: {veto} — حماية من ضغط البيع")
                 continue
+            if conf >= settings.min_confidence and sym not in open_syms:
+                fx = None
+                if self.precision.drift_blocked(sig.strategy):
+                    fx = ("drift", f"🚨 {STRATEGY_AR[sig.strategy]} تحت الإنذار المبكر (أداء متدهور) — لا مال حقيقي 48 ساعة")
+                elif self.autopsy.has_fix(sig.strategy, "against_trend") and meta["mtf"] == -1:
+                    fx = ("mtf", f"🧭 تجاوز {sym}: {STRATEGY_AR[sig.strategy]} تعاكس اتجاه 4 ساعات (علاج تلقائي من تشريح الخسائر)")
+                elif self.autopsy.has_fix(sig.strategy, "fake_breakout") and float(ctx["df"]["vol_z"].iloc[-1] or 0) < 0.5:
+                    fx = ("volconfirm", f"💥 تجاوز {sym}: اختراق بلا حجم كافٍ (علاج تلقائي من تشريح الخسائر)")
+                if fx:
+                    self.blocks.append((time.time(), fx[0]))
+                    self._throttled(f"fx_{fx[0]}_{sym}_{sig.strategy}", 3600, fx[1])
+                    continue
             gst = self.gate_status(sig.strategy, meme)
             champ = self.darwin.champion(sig.strategy)
             if conf < settings.min_confidence:
@@ -383,7 +452,7 @@ class Agent:
                         memory.log_event(f"🏛️ المجلس رفض {sym} ({STRATEGY_AR[sig.strategy]}) {cn['yes']}/3 — "
                                          + " | ".join(f"{v['icon']} {v['name']}: {v['reason']}" for v in no))
                     continue
-                scored.append((conf * min(sig.rr, 3), conf, sym, ctx, sig, feats, why, cn))
+                scored.append((conf * min(sig.rr, 3), conf, sym, ctx, sig, feats, why, cn, meta, s_mult))
 
         if time.time() - self._last_gate_check > 3600:
             self._last_gate_check = time.time()
@@ -398,7 +467,7 @@ class Agent:
         if not self.fresh_candle():
             return  # الدخول فقط فور إغلاق الشمعة — كما في الاختبار التاريخي
         scored.sort(key=lambda x: -x[0])
-        for _, conf, sym, ctx, sig, feats, why, cn in scored:
+        for _, conf, sym, ctx, sig, feats, why, cn, meta, s_mult in scored:
             slots = settings.max_open_positions - len(self.broker.positions)
             if slots <= 0:
                 self.blocks.append((time.time(), "slots"))
@@ -419,7 +488,9 @@ class Agent:
                 self.blocks.append((time.time(), "corr"))
                 self._throttled(f"corr_{sym}", 3600, f"🔗 تجاوز {sym}: {cnote}")
                 continue
-            await self.open_position(sym, ctx, sig, conf, feats, why, slots, cn, cmult, cnote)
+            k_mult, k_note = self.precision.consensus_mult(meta["cons"], meta["conflict"])
+            notes = [x for x in (cnote, k_note, self.precision.session_adj()[2] if s_mult != 1 else "") if x]
+            await self.open_position(sym, ctx, sig, conf, feats, why, slots, cn, cmult * k_mult * s_mult, " · ".join(notes), meta)
 
     def correlation_check(self, sym, side):
         """
@@ -463,15 +534,15 @@ class Agent:
             return 1.0, ""
         return m, f"📏 حجم ×{m:.2f} بناءً على أداء {'مثبت' if m > 1 else 'ضعيف'} للاستراتيجية في هذه الحالة"
 
-    async def open_position(self, sym, ctx, sig, conf, feats, why, slots, cn=None, cmult=1.0, cnote=""):
+    async def open_position(self, sym, ctx, sig, conf, feats, why, slots, cn=None, cmult=1.0, cnote="", meta=None):
         if not hasattr(self, "_open_lock"):
             self._open_lock = asyncio.Lock()
         async with self._open_lock:  # حماية إضافية: لا صفقتين على نفس العملة أبداً
             if any(p["symbol"] == sym for p in self.broker.positions.values()):
                 return
-            await self._open_position(sym, ctx, sig, conf, feats, why, slots, cn, cmult, cnote)
+            await self._open_position(sym, ctx, sig, conf, feats, why, slots, cn, cmult, cnote, meta)
 
-    async def _open_position(self, sym, ctx, sig, conf, feats, why, slots, cn=None, cmult=1.0, cnote=""):
+    async def _open_position(self, sym, ctx, sig, conf, feats, why, slots, cn=None, cmult=1.0, cnote="", meta=None):
         price = self.prices.get(sym, sig.entry)
         # إعادة حساب الوقف والهدف على السعر الحالي بنفس المسافات، ثم تطبيق جينات داروين للبطل
         genome = self.darwin.champion(sig.strategy)
@@ -479,13 +550,19 @@ class Agent:
         rr0 = abs(sig.target - sig.entry) / risk0 if risk0 else 0
         d = 1 if sig.side == "long" else -1
         dist = risk0 * genome["stop"]
-        sig.entry, sig.stop, sig.target = price, price - d * dist, price + d * dist * rr0 * genome["rr"]
         atr = float(ctx["df"]["atr"].iloc[-1])
+        wide = ""
+        if self.autopsy.has_fix(sig.strategy, "tight_stop") and dist < 1.2 * atr:
+            dist, wide = 1.2 * atr, "📏 وقف أوسع (علاج تلقائي من تشريح الخسائر) بنفس المخاطرة"
+        sig.entry, sig.stop, sig.target = price, price - d * dist, price + d * dist * rr0 * genome["rr"]
         open_notional = sum(p["notional"] for p in self.broker.positions.values())
         meme = self.is_meme(sym)
         spot_only = not has_futures(self.fut, sym)
         emult, enote = self.edge_multiplier(sig.strategy, ctx["regime"]["regime"])
         sf = self.safe_factor()
+        mx = getattr(self.mood, "macro", None) or {}
+        if mx.get("extreme"):
+            sf *= 0.5
         sz = self.risk.size(self.equity, price, sig.stop, conf, atr / price, open_notional, slots, meme=meme,
                             mult=emult * cmult * sf)
         if not sz or sz["notional"] < 6:
@@ -508,9 +585,10 @@ class Agent:
         pos = {"symbol": sym, "market": market, "side": sig.side, "qty": sz["qty"], "leverage": sz["leverage"],
                "stop": sig.stop, "init_stop": sig.stop, "target": sig.target, "atr": atr,
                "strategy": sig.strategy, "regime": ctx["regime"]["regime"], "features": feats,
-               "reasons": sig.reasons + [why] + [x for x in (enote, cnote, "🐢 الوضع الآمن: نصف الحجم" if sf < 1 else "") if x],
+               "reasons": sig.reasons + [why] + [x for x in (enote, cnote, wide, "🌍 اضطراب عالمي: نصف الحجم" if mx.get("extreme") else "",
+                                                           "🐢 الوضع الآمن: نصف الحجم" if self.safe_factor() < 1 else "") if x],
                "risk_usd": sz["risk_usd"], "conf": conf,
-               "genome": genome, "council": cn, "meme": meme}
+               "genome": genome, "council": cn, "meme": meme, "meta": meta or {}}
         try:
             if self.mode == "paper":
                 fill, fee_rate = None, None
@@ -603,7 +681,9 @@ class Agent:
                 "darwin": "🧬 لا تحقق شروط الدخول المتطورة (داروين)", "memory": "🧠 تشبه أنماطاً خسرت سابقاً",
                 "corr": "🔗 مرتبطة بقوة بصفقات مفتوحة", "meme": "🐸 الحد الأقصى للعملات الميمية",
                 "slots": "📦 كل خانات الصفقات ممتلئة", "min_notional": "💡 الحد الأدنى لـ Binance يتطلب مخاطرة أكبر",
-                "confidence": "📉 ثقة أقل من المطلوب", "unlock": "🔓 فتح عملات قريب (حماية)"}
+                "confidence": "📉 ثقة أقل من المطلوب", "unlock": "🔓 فتح عملات قريب (حماية)",
+                "drift": "🚨 استراتيجية تحت الإنذار المبكر", "mtf": "🧭 عكس اتجاه 4 ساعات (علاج تلقائي)",
+                "volconfirm": "💥 اختراق بلا حجم كافٍ (علاج تلقائي)"}
 
     def why_not(self):
         items = []
@@ -804,19 +884,44 @@ class Agent:
             return
         self._on_closed(pos, fill, pnl, reason)
 
+    def _mfe(self, p):
+        risk = abs(p["entry"] - p.get("init_stop", p.get("stop")))
+        if not risk or "best" not in p:
+            return 0.0
+        return ((p["best"] - p["entry"]) if p["side"] == "long" else (p["entry"] - p["best"])) / risk
+
+    def _post_close(self, p, r, reason, src):
+        """بعد كل إغلاق: الإنذار المبكر + طابور تشريح الخسائر."""
+        meta = dict(p.get("meta") or {})
+        meta["mfe"] = round(self._mfe(p), 3)
+        p["meta"] = meta
+        ev = self.precision.on_result(p["strategy"], r)
+        if ev:
+            memory.log_event(f"🚨 إنذار مبكر: «{STRATEGY_AR[p['strategy']]}» تتدهور بشكل غير طبيعي — "
+                             f"إيقافها عن المال الحقيقي 48 ساعة (المستكشف يواصل اختبارها)", "warn")
+            notify.send("🚨 إنذار مبكر", f"«{STRATEGY_AR[p['strategy']]}» تتدهور — أوقفها الوكيل 48 ساعة عن المال الحقيقي.",
+                        tags=["warning"])
+        if r <= 0:
+            self.autopsy.add({**p, "stop": p.get("init_stop", p.get("stop")), "r": r, "exit_reason": reason,
+                              "closed": time.time()}, src)
+
     def _explorer_closed(self, p, fill, net, r, reason):
         """كل صفقة يغلقها المستكشف تعلّم الوكيل الرئيسي."""
+        if not p["near"]:
+            self._post_close(p, r, reason, "explore")
         self.learner.update(p["strategy"], p.get("regime", "RANGE"), r, weight=0.15 if p["near"] else 0.3)
         memory.save_trade({"symbol": p["symbol"], "market": "explore_near" if p["near"] else "explore",
                            "strategy": p["strategy"], "side": p["side"], "regime": p.get("regime"),
                            "features": p.get("features"), "reasons": p.get("reasons"), "council": p.get("council"),
                            "entry": p["entry"], "stop": p["init_stop"], "target": p["target"], "qty": p["qty"],
                            "leverage": 1, "exit": fill, "pnl": net, "r_mult": r, "exit_reason": reason,
-                           "opened": p["opened"], "closed": time.time(), "mode": self.mode, "shadow": 1})
+                           "opened": p["opened"], "closed": time.time(), "mode": self.mode, "shadow": 1,
+                           "meta": p.get("meta")})
 
     def _on_closed(self, pos, fill, pnl, reason):
         pnl += pos.get("realized", 0.0)  # + الربح الجزئي المحقق سابقاً
         r = pnl / pos["risk_usd"] if pos.get("risk_usd") else 0
+        self._post_close(pos, r, reason, "real")
         memory.save_trade(pos | {"stop": pos.get("init_stop", pos["stop"]), "exit": fill, "pnl": pnl, "r_mult": r, "exit_reason": reason,
                                  "closed": time.time(), "mode": self.mode, "shadow": 0})
         self.learner.update(pos["strategy"], pos["regime"], r, weight=1.0)
@@ -851,6 +956,12 @@ class Agent:
         except Exception as e:
             log.warning(f"weekly: {e}")
             return
+        au = self.autopsy.summary()
+        if au["top"]:
+            text += f"\n🔬 أكثر خطأ تكرر هذا الأسبوع: {au['top']}"
+        mi = self.precision.model_info
+        if mi.get("auc"):
+            text += f"\n🧠 الحَكَم الذكي: {'يشارك في القرار' if mi['status'] == 'approved' else 'ما زال يتعلم'} (دقة {mi['auc']:.2f})"
         reps = memory.kv_get("reports", [])
         reps.insert(0, {"ts": time.time(), "title": title, "text": text, "weekly": True})
         memory.kv_set("reports", reps[:20])
@@ -877,7 +988,7 @@ class Agent:
         notify.send(f"📰 {title}", text, tags=["newspaper"])
 
     # ================================================================ التجريب الموازي (ظل)
-    def _open_shadow(self, sym, ctx, sig, feats, council=None, near=False):
+    def _open_shadow(self, sym, ctx, sig, feats, council=None, near=False, meta=None):
         key = f"{sym}|{sig.strategy}"
         if any(v["key"] == key for v in self.shadow.values()):
             return
@@ -886,7 +997,7 @@ class Agent:
                             "entry": sig.entry, "stop": sig.stop, "target": sig.target,
                             "atr": float(ctx["df"]["atr"].iloc[-1]), "ts": int(ctx["df"]["ts"].iloc[-1]),
                             "regime": ctx["regime"]["regime"], "features": feats, "reasons": sig.reasons,
-                            "council": council, "m": metrics(ctx, sig), "near": near}
+                            "council": council, "m": metrics(ctx, sig), "near": near, "meta": meta}
 
     def _resolve_shadows(self, sym, df):
         for sid, s in list(self.shadow.items()):
@@ -1152,12 +1263,58 @@ class Agent:
                 tradable = {m["base"] for m in (getattr(self.spot, "markets", None) or {}).values()
                             if m.get("quote") == "USDT" and m.get("active") and m.get("spot")}
                 ctx = {"btc": self.prices.get("BTC/USDT"), "radar_flow": self.radar.snapshot(3600)["flow"],
-                       "names": names, "tradable": tradable, "prices": dict(self.prices)}
+                       "names": names, "tradable": tradable, "prices": dict(self.prices),
+                       "top_btc": self.positioning.data.get("BTC/USDT")}
                 await asyncio.to_thread(self.smart.refresh, ctx)
                 if self.study.get("finished") and not memory.kv_get("sm_backfilled"):
                     await asyncio.to_thread(self.smart.backfill)
             except Exception as e:
                 log.warning(f"smart: {e}")
+            await asyncio.sleep(60)
+
+    # ================================================================ أدوات الدقة
+    async def precision_loop(self):
+        import pandas as pd
+        await asyncio.sleep(30)
+        last_review = 0
+        while True:
+            try:
+                due = self.positioning.due(self.universe)
+                if due:
+                    await asyncio.to_thread(self.positioning.refresh, due, dict(self._closes1h))
+                alts = [s.split("/")[0] for s in self.universe if not self.is_meme(s) and s != "BTC/USDT"]
+                await asyncio.to_thread(self.rotation.update, dict(self._closes1h), alts)
+                if time.time() - self.precision.last_train > 6 * 3600:
+                    await asyncio.to_thread(self.precision.retrain)
+                    mi = self.precision.model_info
+                    if mi.get("status") == "approved":
+                        memory.log_event(f"🧠 الحَكَم الذكي تدرّب على {mi['n']} صفقة ونجح في الاختبار المخفي "
+                                         f"(دقة الترتيب {mi['auc']:.2f}) — يشارك في القرار", "learn")
+                    elif mi.get("status") == "rejected":
+                        memory.log_event(f"🧠 الحَكَم الذكي تدرّب على {mi['n']} صفقة لكنه لم يتفوق في الاختبار المخفي "
+                                         f"({mi['auc']:.2f}) — لن يؤثر على القرار حتى يتحسن", "learn")
+                for q in self.autopsy.due(3):
+                    try:
+                        raw = await self.spot.fetch_ohlcv(q["symbol"], "15m", since=int(q["closed"] * 1000), limit=40)
+                        bars = pd.DataFrame(raw, columns=["ts", "open", "high", "low", "close", "volume"])
+                    except Exception:
+                        bars = None
+                    cat = self.autopsy.resolve(q, bars)
+                    if q["src"] == "real":
+                        memory.log_event(f"🔬 تشريح خسارة {q['symbol']} ({STRATEGY_AR.get(q['strategy'], q['strategy'])}): "
+                                         f"{AUTOPSY_CATS[cat]}", "learn")
+                if time.time() - last_review > 6 * 3600:
+                    last_review = time.time()
+                    for strat, kind, share, on in self.autopsy.review():
+                        if on:
+                            memory.log_event(f"🔬 علاج تلقائي لـ«{STRATEGY_AR[strat]}»: {AUTOPSY_FIXES[kind]} — "
+                                             f"لأن {share:.0%} من خسائرها الأخيرة بسبب «{AUTOPSY_CATS[kind]}»", "learn")
+                        else:
+                            memory.log_event(f"🔬 انتهى العلاج «{AUTOPSY_FIXES[kind]}» لـ«{STRATEGY_AR[strat]}» — سيُعاد إن عاد السبب", "learn")
+                self.autopsy.save()
+                self.precision.save()
+            except Exception as e:
+                log.warning(f"precision: {e}")
             await asyncio.sleep(60)
 
     # ================================================================ بيانات مشتركة
@@ -1258,6 +1415,9 @@ class Agent:
             "explorer": self.explorer.summary(self.prices),
             "exec": execution.summary(self.mode),
             "smart": self.smart.summary(),
+            "precision": self.precision.summary(),
+            "autopsy": self.autopsy.summary(),
+            "rotation": self.rotation.summary(),
             "why": self.why_not(),
             "health": self.health(),
             "safe": self.safe_mode(),

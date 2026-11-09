@@ -218,6 +218,7 @@ details.smd .sml{padding:0 4px;background:none;margin:4px 0 0}details.smd .sml d
 <section class="tab" id="t-mkt">
   <div class="jump" id="j-mkt"></div>
   <div class="card" id="sec-smart" data-k="smart"><h2>🕵️ رادار الأموال الكبرى</h2><div id="smart"><div class="sk"></div><div class="sk s2"></div></div></div>
+  <div class="card" id="sec-macro" data-k="macro"><h2>🌍 الاقتصاد العالمي ودورة السيولة</h2><div id="macro"><div class="sk"></div><div class="sk s2"></div></div></div>
   <div class="card" id="sec-mood" data-k="mood"><h2>🌡️ مزاج السوق</h2><div id="mood"><div class="sk"></div><div class="sk s2"></div></div></div>
   <div class="card" id="sec-coins" data-k="ana"><h2>العملات <span id="uni" class="mut"></span></h2>
     <input id="q" class="search" placeholder="🔍 ابحث عن عملة…" oninput="renderAna()" dir="auto">
@@ -242,6 +243,8 @@ details.smd .sml{padding:0 4px;background:none;margin:4px 0 0}details.smd .sml d
 <!-- ======================= 🧠 العقل ======================= -->
 <section class="tab" id="t-brain">
   <div class="jump" id="j-brain"></div>
+  <div class="card" id="sec-prec" data-k="prec"><h2>🎯 أدوات الدقة</h2><div id="prec"><div class="sk"></div><div class="sk s2"></div></div></div>
+  <div class="card" id="sec-autopsy" data-k="autopsy"><h2>🔬 تشريح الخسائر</h2><div id="autopsy"><div class="sk"></div><div class="sk s2"></div></div></div>
   <div class="card" id="sec-pt" data-k="pt"><h2>نبض التعلم</h2><div id="pt"><div class="sk"></div><div class="sk s2"></div></div></div>
   <div class="card" id="sec-gate" data-k="gate"><h2>🛡️ الاستراتيجيات والاختبار المخفي</h2><div id="gate"><div class="sk"></div><div class="sk s2"></div></div></div>
   <div class="card" id="sec-darwin" data-k="darwin"><h2>🧬 داروين وحماية الأرباح</h2><div id="darwin"><div class="sk"></div><div class="sk s2"></div></div></div>
@@ -395,6 +398,7 @@ function renderStrip(s){const h=s.health||{},rt=s.realtime||{},nx=rt.next_close?
  const chips=[[s.frozen?'🚨':s.running?'🟢':'⏸️',s.frozen?'مجمّد':s.running?'يعمل':'متوقف'],[rt.on?'⚡':'⏱️',rt.on?'متابعة لحظية':'كل دقيقة'],
   ['🕯️',nx==null?'—':`التحليل بعد <span class="num">${Math.floor(nx/60)}:${String(nx%60).padStart(2,'0')}</span>`]];
  if(s.safe)chips.push(['🐢','الوضع الآمن']);if(s.mood&&s.mood.blackout)chips.push(['📅','حدث اقتصادي']);if(s.market_risk_off)chips.push(['🛑','خطر السوق']);
+ if(s.rotation&&s.rotation.season!=='neutral')chips.push(['🔄',s.rotation.season==='alt'?'موسم العملات البديلة':'موسم البيتكوين']);
  if(s.smart&&s.smart.used&&s.smart.used.length)chips.push(['🕵️',s.smart.verdict[0]==='buy'?'المال الكبير يشتري':s.smart.verdict[0]==='sell'?'المال الكبير يبيع':'المال الكبير محايد']);
  if(s.mood&&s.mood.fng)chips.push(['🌡️',`${s.mood.fng.label_ar} <span class="num">${s.mood.fng.value}</span>`]);
  $('strip').innerHTML=chips.map(([i,t])=>`<span>${i} ${t}</span>`).join('')}
@@ -437,7 +441,7 @@ async function loadChart(){const s=$('sym').value;if(!s||!cs)return;try{const d=
 let LOADED_VER=null;
 function hardRefresh(){$('rfb').classList.add('spin');setTimeout(()=>location.reload(),250)}
 function render(s){S=s;for(const[f,a]of[[renderWhy,s],[renderStrip,s],[renderHealth,s.health],[renderSafe,s],[renderEvMini,s],[renderCal,(s.perf||{}).daily]])try{f(a)}catch(e){console.log(e)}if(s.strategy_names)Object.assign(STR,s.strategy_names);try{renderGate(s)}catch(e){console.log(e)}if(s.version){if(LOADED_VER===null)LOADED_VER=s.version;else if(s.version!==LOADED_VER)$('upd').style.display='block'}try{renderPerf(s)}catch(e){console.log(e)}
- for(const[f,a]of[[renderSmart,s.smart],[renderOnchain,s.onchain],[renderMC,(s.perf||{}).monte_carlo],[renderMaint,s],[renderExplorer,s.explorer],[renderMood,s.mood],[renderDarwin,s.darwin],[renderCouncil,s.council_stats]])try{f(a)}catch(e){console.log(e)}
+ for(const[f,a]of[[renderMacro,s],[renderPrec,s.precision],[renderAutopsy,s.autopsy],[renderSmart,s.smart],[renderOnchain,s.onchain],[renderMC,(s.perf||{}).monte_carlo],[renderMaint,s],[renderExplorer,s.explorer],[renderMood,s.mood],[renderDarwin,s.darwin],[renderCouncil,s.council_stats]])try{f(a)}catch(e){console.log(e)}
  try{renderGhosts(s)}catch(e){console.log(e)}$('ver').textContent=s.version||'—';
  $('mode').textContent=s.mode.toUpperCase();$('mode').className='pill '+(s.mode==='live'?'w':'on');
  $('run').textContent=s.frozen?'مُجمَّد':s.running?'يعمل':'متوقف';$('run').className='pill '+(s.frozen?'off':s.running?'on':'w');
@@ -453,7 +457,7 @@ function render(s){S=s;for(const[f,a]of[[renderWhy,s],[renderStrip,s],[renderHea
  // market
  $('uni').textContent=`(${s.analysis.length})`;
  const sel=$('sym'),cur=sel.value;if(sel.options.length!==s.analysis.length){sel.innerHTML=s.analysis.map(a=>`<option>${a.symbol}</option>`).join('');sel.value=cur||'BTC/USDT'}
- ANA_ROW=a=>`<div class="row click" onclick="pickCoin('${a.symbol}')"><div>${a.rank?`<span class="num mut" style="font-size:11px">#${a.rank}</span> `:''}<b>${a.symbol.replace('/USDT','')}</b> <span class="tag">${REG[a.regime]||a.regime}</span> ${PH[a.phase]?`<span class="tag">${PH[a.phase]}</span>`:''} ${a.meme?'<span class="tag">🐸 ميمية</span>':''} ${a.learned?'':'<span class="tag">يدرس…</span>'} ${a.rs!=null?`<span class="tag" title="القوة النسبية مقابل البيتكوين">${a.rs<=0.2?'💪 قوية':a.rs>=0.8?'🥀 ضعيفة':'قوة '+Math.round((1-a.rs)*100)+'%'}</span>`:''}<div class="reasons">ADX ${a.adx} · RSI ${a.rsi} · FVG ${a.fvg} · OB ${a.ob}${a.bos?` · كسر هيكل ${a.bos>0?'↑':'↓'}`:''}${a.last_decision?`<br>آخر قرار: ${a.last_decision.strategy} (${SIDE[a.last_decision.side]}) ثقة ${Math.round(a.last_decision.conf*100)}%${a.last_decision.votes?` · المجلس ${a.last_decision.votes.join(' ')}`:''} — ${a.last_decision.memory}`:''}</div></div><div style="text-align:left"><b class="num">${fp(a.price)}</b><div><button class="star ${FAV.has(a.symbol)?'on':''}" onclick="event.stopPropagation();toggleFav('${a.symbol}')">★</button></div></div></div>`;
+ ANA_ROW=a=>`<div class="row click" onclick="pickCoin('${a.symbol}')"><div>${a.rank?`<span class="num mut" style="font-size:11px">#${a.rank}</span> `:''}<b>${a.symbol.replace('/USDT','')}</b> <span class="tag">${REG[a.regime]||a.regime}</span> ${PH[a.phase]?`<span class="tag">${PH[a.phase]}</span>`:''} ${a.meme?'<span class="tag">🐸 ميمية</span>':''} ${a.learned?'':'<span class="tag">يدرس…</span>'} ${a.rs!=null?`<span class="tag" title="القوة النسبية مقابل البيتكوين">${a.rs<=0.2?'💪 قوية':a.rs>=0.8?'🥀 ضعيفة':'قوة '+Math.round((1-a.rs)*100)+'%'}</span>`:''}<div class="reasons">ADX ${a.adx} · RSI ${a.rsi} · FVG ${a.fvg} · OB ${a.ob}${a.bos?` · كسر هيكل ${a.bos>0?'↑':'↓'}`:''}${a.last_decision?`<br>آخر قرار: ${a.last_decision.strategy} (${SIDE[a.last_decision.side]}) ثقة ${Math.round(a.last_decision.conf*100)}%${a.last_decision.votes?` · المجلس ${a.last_decision.votes.join(' ')}`:''}${a.last_decision.ml!=null?` · 🧠 الحَكَم ${Math.round(a.last_decision.ml*100)}%`:''} — ${a.last_decision.memory}`:''}${posLine(a)}</div></div><div style="text-align:left"><b class="num">${fp(a.price)}</b><div><button class="star ${FAV.has(a.symbol)?'on':''}" onclick="event.stopPropagation();toggleFav('${a.symbol}')">★</button></div></div></div>`;
  renderAna();
  // learning
  const rt=s.realtime||{},nx=rt.next_close?Math.max(0,Math.round(rt.next_close-Date.now()/1000)):null;
@@ -557,11 +561,11 @@ function renderMaint(s){const t=s.testnet||{},m=s.maint||{},x=s.exec||{};
 const SMST={learning:['🎓','يتعلم','mut'],approved:['✅','معتمد','up'],inverse:['🔄','يُقرأ بالعكس','warn'],useless:['💤','لا يتنبأ','mut']};
 function renderSmart(sm){if(!sm)return;const [vk,vt]=sm.verdict,col=vk==='buy'?'up':vk==='sell'?'dn':'mut',ic=vk==='buy'?'🟢':vk==='sell'?'🔴':'⚪';
  const ok=sm.sources.filter(x=>x.status==='approved'||x.status==='inverse').length;
- let h=`<div class="smv ${col}"><span>${ic}</span><div><b>${vt}</b><div class="reasons" style="margin:2px 0 0">الوكيل يستخدم <b class="num">${ok}</b> من 10 مصادر أثبتت صدقها في محكمة الأدلة</div></div></div>`;
+ let h=`<div class="smv ${col}"><span>${ic}</span><div><b>${vt}</b><div class="reasons" style="margin:2px 0 0">الوكيل يستخدم <b class="num">${ok}</b> من ${sm.sources.length} مصدراً أثبتت صدقها في محكمة الأدلة</div></div></div>`;
  const evs=(sm.events||[]).filter(e=>Date.now()/1000-e.ts<3*86400).slice(0,4);
  if(evs.length)h+=`<div class="ev"><b>📢 أحداث يتابعها الوكيل</b>${evs.map(e=>`<div class="reasons">• ${e.title} <span class="mut">${ago(e.ts)}</span></div>`).join('')}</div>`;
  if(sm.unlocks&&sm.unlocks.length)h+=`<div class="ev"><b>🔓 فتح عملات قريب</b><div class="reasons">${sm.unlocks.slice(0,5).map(u=>`${u.base} ${(h=>h<24?`بعد ${Math.max(1,Math.round(h))} س`:`بعد ${Math.round(h/24)} ي`)((u.ts-Date.now()/1000)/3600)}${u.pct?` (${f2(u.pct*100,1)}%)`:''}`).join(' · ')} — الوكيل لا يشتري هذه العملات قبل الموعد بيومين</div></div>`;
- h+=`<details class="info smd"><summary>🔍 عرض المصادر العشرة</summary><div class="sml">${sm.sources.map(x=>{const [i,l,c]=x.err&&!x.text?['⚪','غير متاح','mut']:(SMST[x.status]||SMST.learning);
+ h+=`<details class="info smd"><summary>🔍 عرض كل المصادر (${sm.sources.length})</summary><div class="sml">${sm.sources.map(x=>{const [i,l,c]=x.err&&!x.text?['⚪','غير متاح','mut']:(SMST[x.status]||SMST.learning);
   const bar=x.s!=null?`<span class="num ${x.s>0.1?'up':x.s<-0.1?'dn':'mut'}" style="font-size:11px">${x.s>0?'+':''}${f2(x.s,2)}</span>`:'';
   return `<div class="ev"><div style="display:flex;justify-content:space-between;gap:6px"><b>${x.icon} ${x.name}</b><span class="chip ${c}">${i} ${l}${x.status==='learning'&&!x.event?` <span class="num">${Math.min(x.n,x.need)}/${x.need}</span>`:''}</span></div>
   <div class="reasons" style="margin:2px 0">${x.plain}</div>${x.text?`<div style="font-size:12.5px">${bar} ${x.text}</div>`:`<div class="reasons">${x.err||'جارٍ الجلب…'}</div>`}</div>`}).join('')}</div></details>`;
@@ -569,6 +573,47 @@ function renderSmart(sm){if(!sm)return;const [vk,vt]=sm.verdict,col=vk==='buy'?'
  $('smart').innerHTML=h;
  $('whalek').innerHTML=`<div class="reasons">${sm.whale_pro?'🟢 مفتاح Whale Alert مفعّل — الوكيل يرى تحويلات الحيتان المعروفة على البلوكشين':'⚪ غير مفعّل — الوكيل يستخدم صفقات الحيتان على Binance (مجاني)'}</div>
  <div style="display:flex;gap:6px;margin-top:6px"><input id="wk" placeholder="مفتاح Whale Alert API" style="margin:0;font-size:13px;padding:9px" dir="ltr"><button onclick="mt('whale_key',{key:$('wk').value})">حفظ</button></div>`+info('اختياري ومدفوع (اشتراك من whale-alert.io). يضيف رؤية أعمق: تحويلات محافظ معروفة الهوية (منصات، صناديق) من وإلى المنصات. بدونه يعمل الرادار بالمصادر المجانية.')}
+function posLine(a){const p=a.pos,bits=[];
+ if(a.mtf)bits.push(`🧭 اتجاه 4س ${a.mtf>0?'↑':'↓'}`);
+ if(p){bits.push(`📊 الكبار <span class="num">${Math.round(p.top/(1+p.top)*100)}%</span> شراء · الجمهور <span class="num">${Math.round(p.crowd/(1+p.crowd)*100)}%</span>`);
+  const z=[];if(p.up)z.push(`فوق <span class="num up">+${f2(p.up.dist*100,1)}%</span>`);if(p.dn)z.push(`تحت <span class="num dn">${f2(p.dn.dist*100,1)}%</span>`);
+  if(z.length)bits.push(`🧲 تصفيات ${z.join(' / ')}`)}
+ return bits.length?`<br>${bits.join(' · ')}`:''}
+function renderMacro(s){const sm=s.smart,ro=s.rotation;if(!sm&&!ro)return;let h='';
+ const m=sm&&sm.sources.find(x=>x.key==='macro');
+ if(m){const d=m.text?'':(m.err||'جارٍ الجلب…');h+=`<div class="row"><div><b>🌍 الأسواق العالمية</b><div class="reasons">${m.text||d}</div></div>${m.s!=null?`<b class="num ${m.s>0.3?'up':m.s<-0.3?'dn':'mut'}" style="white-space:nowrap">${m.s>0.3?'تدعم المخاطرة':m.s<-0.3?'تهرب من المخاطرة':'هادئة'}</b>`:''}</div>`}
+ if(ro){h+=`<div class="row"><div><b>🔄 دورة السيولة</b><div class="reasons">${ro.label}</div><div class="reasons">`+
+  [ro.alt_vs_btc!=null?`العملات البديلة مقابل البيتكوين (7 أيام): <span class="num ${ro.alt_vs_btc>=0?'up':'dn'}">${ro.alt_vs_btc>=0?'+':''}${f2(ro.alt_vs_btc*100,1)}%</span>`:'',
+   ro.dom!=null?`هيمنة البيتكوين: <span class="num">${f2(ro.dom,1)}%</span>${ro.dom_chg!=null?` (<span class="num">${ro.dom_chg>=0?'+':''}${f2(ro.dom_chg,2)}</span> خلال أسبوع)`:''}`:''].filter(Boolean).join(' · ')+`</div></div></div>`}
+ h+=info('🌍 الوكيل يتابع الأسهم الأمريكية والدولار والذهب ومؤشر الخوف. أحياناً يهبط البيتكوين لأن الأسواق كلها تهبط وليس لسبب يخصه. هذا المصدر يدخل محكمة الأدلة مثل غيره: لا يؤثر حتى يثبت أنه يتنبأ. وقاعدة حماية ثابتة: عند اضطراب عالمي حاد (مؤشر الخوف فوق 35 أو هبوط الأسهم 3% في يوم) يدخل الوكيل بنصف الحجم.<br><br>🔄 عندما يخرج المال من البيتكوين إلى العملات الأخرى (موسم البديلة) تكون فرص العملات البديلة أقوى، والعكس صحيح. يعدّل الوكيل ثقته قليلاً حسب ذلك.');
+ $('macro').innerHTML=h}
+const ST_ML={learning:['🎓','يجمع البيانات','mut'],approved:['✅','يشارك في القرار','up'],rejected:['💤','لم يتفوق بعد — لا يؤثر','mut']};
+function renderPrec(p){if(!p)return;const m=p.model||{};const [i,l,c]=ST_ML[m.status]||ST_ML.learning;
+ let h=`<div class="row"><div><b>🧠 الحَكَم الذكي</b><div class="reasons">${m.status==='learning'?`يحتاج <span class="num">${m.need}</span> صفقة للتدريب — لديه الآن <span class="num">${m.n||0}</span>`:
+  `تدرّب على <span class="num">${m.n}</span> صفقة · دقة الترتيب في الاختبار المخفي <span class="num">${f2(m.auc,2)}</span> (0.50 = تخمين، المطلوب 0.55+)`}</div>
+  ${m.top&&m.top.length?`<div class="reasons">أهم ما يراقبه: ${m.top.join('، ')}</div>`:''}
+  ${m.top_r!=null?`<div class="reasons">الصفقات التي توقّع نجاحها: <span class="num ${m.top_r>=0?'up':'dn'}">${f2(m.top_r)}R</span> · التي حذّر منها: <span class="num ${m.bot_r>=0?'up':'dn'}">${f2(m.bot_r)}R</span></div>`:''}</div>
+  <span class="chip ${c}">${i} ${l}</span></div>`;
+ const cal=p.cal||{};
+ h+=`<div class="ev"><b>🎯 صدق الثقة</b>`+(cal.status!=='ready'?`<div class="reasons">يجمع النتائج: <span class="num">${cal.n||0}/${cal.need||60}</span> صفقة</div>`:
+  `<div class="reasons">${cal.honest?'✅ ثقته العالية تعني فعلاً نتائج أفضل':'⚠️ ثقته العالية لا تعني نتائج أفضل دائماً — صار يصحح ترتيب ثقته تلقائياً'}</div>`+
+  cal.bins.map(b=>`<div style="display:flex;gap:8px;align-items:center;font-size:12px;margin-top:4px"><span style="width:84px">يقول <span class="num">${Math.round(b.conf*100)}%</span></span><div class="bar" style="flex:1;margin:0"><i style="width:${Math.round(b.win*100)}%;background:${b.r>=0?'var(--up)':'var(--dn)'}"></i></div><span style="width:120px">ربح فعلاً <span class="num">${Math.round(b.win*100)}%</span> (<span class="num">${f2(b.r)}R</span>)</span></div>`).join(''))+`</div>`;
+ const CN={'1':'استراتيجية وحدها','2':'استراتيجيتان متفقتان','3+':'3 أو أكثر متفقة','conflict':'إشارات متعارضة'};
+ h+=`<div class="ev"><b>🤝 قوة التوافق</b>`+Object.entries(CN).map(([k,n])=>{const b=(p.cons||{})[k]||{n:0};return `<div class="row" style="padding:4px 0"><span>${n}</span><span class="reasons" style="margin:0"><span class="num">${b.n}</span> صفقة${b.n?` · <span class="num ${b.avg_r>=0?'up':'dn'}">${f2(b.avg_r)}R</span>`:''}${b.mult?` · حجم ×<span class="num">${f2(b.mult)}</span>`:''}</span></div>`}).join('')+`</div>`;
+ const ss=p.sess||{};h+=`<div class="ev"><b>🕐 أفضل الأوقات للوكيل</b>`+Object.entries(p.sess_names||{}).map(([k,n])=>{const b=ss[k]||{n:0};
+  return `<div class="row" style="padding:4px 0${k===p.now_sess?';font-weight:600':''}"><span>${n}${k===p.now_sess?' ← الآن':''}</span><span class="reasons" style="margin:0"><span class="num">${b.n}</span> صفقة${b.n?` · <span class="num ${b.avg_r>=0?'up':'dn'}">${f2(b.avg_r)}R</span>`:''}${b.mult?` · ${b.mult>1?'🟢':'🟠'} حجم ×<span class="num">${f2(b.mult)}</span>`:''}</span></div>`}).join('')+`</div>`;
+ const dr=Object.entries(p.drift||{});
+ h+=`<div class="ev"><b>🚨 الإنذار المبكر</b>`+(dr.length?dr.map(([k,v])=>`<div class="reasons">${v.until>Date.now()/1000?`⛔ <b>${STR[k]||k}</b> موقوفة عن المال الحقيقي حتى ${new Date(v.until*1000).toLocaleString('ar',{weekday:'short',hour:'2-digit',minute:'2-digit'})}`:`👀 <b>${STR[k]||k}</b> تحت المراقبة (<span class="num">${Math.round(v.s/p.h*100)}%</span> من حد الإنذار)`}</div>`).join(''):'<div class="reasons">✅ لا توجد استراتيجية تتدهور بشكل غير طبيعي</div>')+`</div>`;
+ h+=info('🧠 <b>الحَكَم الذكي</b>: نموذج تعلّم آلي يدرس آلاف الصفقات (التاريخية والتعليمية والحقيقية) ليعرف ما يميّز الرابحة عن الخاسرة، ثم يحكم على كل فرصة جديدة. لا يُسمح له بالتأثير إلا إذا نجح في اختبار على صفقات لم يرها، ويُعاد تدريبه كل 6 ساعات.<br><br>🎯 <b>صدق الثقة</b>: هل الصفقات التي يثق بها الوكيل أكثر تربح فعلاً أكثر؟ إن لم تكن، يعيد ترتيب ثقته.<br><br>🤝 <b>التوافق</b>: إذا اتفقت عدة استراتيجيات على نفس العملة يزيد الحجم قليلاً، وإذا تعارضت يقل — والأرقام تتعدل حسب النتائج الفعلية.<br><br>🕐 <b>الأوقات</b>: يتغير الحجم فقط إذا ثبت إحصائياً أن جلسة معينة أفضل أو أسوأ.<br><br>🚨 <b>الإنذار المبكر</b>: يراقب كل استراتيجية صفقة بصفقة، وإذا تدهورت بشكل غير طبيعي يوقفها عن المال الحقيقي 48 ساعة، بينما يواصل المستكشف اختبارها.');
+ $('prec').innerHTML=h}
+function renderAutopsy(a){if(!a)return;
+ let h=a.top?`<div class="smv"><span>🔬</span><div><b>أكثر خطأ أقع فيه هذا الأسبوع: ${a.top}</b><div class="reasons" style="margin:2px 0 0">من تشريح <span class="num">${a.week}</span> خسارة (حقيقية وتعليمية)</div></div></div>`:
+  `<div class="reasons">${a.week?`شُرّحت <span class="num">${a.week}</span> خسارة هذا الأسبوع — لا خطأ متكرر واضح`:'لا توجد خسائر مشرّحة بعد'}${a.pending?` · <span class="num">${a.pending}</span> بانتظار التشريح (بعد 8 ساعات من الإغلاق)`:''}</div>`;
+ const tot=a.counts.reduce((x,y)=>x+y.n,0)||1;
+ h+=a.counts.map(c=>`<div style="display:flex;gap:8px;align-items:center;font-size:12.5px;margin-top:6px"><span style="width:140px">${c.name}</span><div class="bar" style="flex:1;margin:0"><i style="width:${Math.round(c.n/tot*100)}%;${c.cat==='normal'?'background:var(--mut)':''}"></i></div><span class="num" style="width:28px">${c.n}</span></div>`).join('');
+ if(a.fixes&&a.fixes.length)h+=`<div class="ev" style="margin-top:8px"><b>💊 علاجات مفعّلة تلقائياً</b>${a.fixes.map(f=>`<div class="reasons">• ${STR[f.strategy]||f.strategy}: ${f.name}</div>`).join('')}</div>`;
+ h+=info('بعد كل صفقة خاسرة ينتظر الوكيل 8 ساعات ثم يرى ماذا فعل السعر بعدها:<br>📏 <b>وقف ضيق</b>: ضرب الوقف ثم ذهب للهدف — الفكرة صحيحة لكن الوقف قريب.<br>⏱️ <b>دخول مبكر</b>: نزل أكثر ثم ذهب للهدف — التوقيت مبكر.<br>🧭 <b>عكس الاتجاه</b>: الصفقة عاكست اتجاه 4 ساعات.<br>💥 <b>اختراق كاذب</b>: اختراق فشل خلال ساعة.<br>📉 <b>أرجع الربح</b>: كانت رابحة +1R ثم خسرت.<br>🎲 <b>طبيعية</b>: لا خطأ واضح — جزء عادي من التداول.<br><br>إذا تكرر نفس الخطأ في 40%+ من خسائر استراتيجية، يفعّل الوكيل علاجاً تلقائياً لمدة 21 يوماً (وقف أوسع بنفس المخاطرة، أو منع الدخول عكس الاتجاه، أو اشتراط حجم تداول قوي).');
+ $('autopsy').innerHTML=h}
 function renderExplorer(x){if(!x)return;
  const k=(l,v,c='')=>`<div class="kpi"><small>${l}</small><b class="num ${c}">${v}</b></div>`;
  let h=`<div class="grid">${k('صفقات مغلقة',x.trades)}${k('مفتوحة الآن',x.open+'/'+x.max_pos)}${k('نسبة الربح',f2(x.winrate*100,0)+'%')}${k('متوسط الصفقة',f2(x.avg_r)+'R',x.avg_r>=0?'up':'dn')}</div>
