@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .agent import Agent
 from .config import settings
-from . import memory, notify, performance, execution, maintenance
+from . import memory, notify, performance, execution, maintenance, keys
 from fastapi.responses import Response
 from .strategies import STRATEGY_AR
 from .regime import LABELS_AR
@@ -82,6 +82,7 @@ def watchdog():
 async def lifespan(app):
     await agent.start()
     threading.Thread(target=watchdog, daemon=True).start()
+    threading.Thread(target=keys.server_ip, daemon=True).start()
     asyncio.create_task(maintenance.monitor_loop(agent))
     asyncio.create_task(update_watcher())
     if RUNNING_SHA and memory.kv_get("last_version") != RUNNING_SHA:
@@ -138,6 +139,8 @@ async def state(req: Request):
     s["reports"] = memory.kv_get("reports", [])[:7]
     s["notify"] = {"on": notify.enabled(), "topic": notify.topic(), "server": notify.SERVER}
     s["version"] = VERSION_NAME
+    s["keys"] = keys.status()
+    s["key_check"] = agent.key_check
     s["maint"] = maintenance.status()
     s["version_date"] = VERSION_DATE
     return s
@@ -252,6 +255,48 @@ async def maint(req: Request):
     raise HTTPException(400, "أمر غير معروف")
 
 
+@app.post("/api/keys")
+async def keys_ctl(req: Request):
+    """ربط Binance من التطبيق: اختبار المفتاح ثم حفظه، أو حذفه."""
+    auth(req)
+    body = await req.json()
+    a, which = body.get("action"), body.get("which")
+    if which not in keys.WHICH:
+        raise HTTPException(400, "نوع الحساب غير معروف")
+    if which == "live" and a in ("save", "delete"):
+        if not hmac.compare_digest(str(body.get("password", "")), settings.dashboard_password):
+            await asyncio.sleep(1.5)
+            raise HTTPException(401, "كلمة مرور لوحة التحكم غير صحيحة")
+    active = agent.mode == which
+    if a == "delete":
+        if active and agent.broker and agent.broker.positions:
+            raise HTTPException(400, "توجد صفقات مفتوحة على هذا الحساب — أغلقها أولاً")
+        keys.delete(which)
+        memory.log_event(f"🔑 حُذفت مفاتيح Binance ({'الحقيقي' if which == 'live' else 'التجريبي'})")
+        if active:
+            memory.kv_set("mode", "paper")
+            asyncio.get_event_loop().call_later(1.0, lambda: os._exit(0))
+        return {"ok": True, "restart": active}
+    k, s = keys.clean(body.get("key")), keys.clean(body.get("secret"))
+    if len(k) < 20 or len(s) < 20:
+        raise HTTPException(400, "المفتاح أو الكلمة السرية ناقصة — انسخ كل منهما كاملاً")
+    if k == s:
+        raise HTTPException(400, "لصقت نفس النص في الخانتين — الكلمة السرية (Secret) مختلفة عن المفتاح (API Key)")
+    rep = await keys.verify(which, k, s)
+    if a == "test" or not rep["ok"]:
+        return {"ok": rep["ok"], "report": rep, "saved": False}
+    if a != "save":
+        raise HTTPException(400, "أمر غير معروف")
+    if active and agent.broker and agent.broker.positions:
+        raise HTTPException(400, "توجد صفقات مفتوحة على هذا الحساب — لا يمكن تغيير المفتاح الآن")
+    keys.save(which, k, s, {"ts": time.time(), **{x: rep.get(x) for x in ("futures", "ip_restrict", "withdraw",
+                                                                         "balance_spot", "balance_fut")}})
+    memory.log_event(f"🔑 تم ربط Binance ({'الحساب الحقيقي' if which == 'live' else 'الحساب التجريبي'}) — المفتاح {keys.mask(k)}")
+    if active:  # الوضع الحالي يستخدم هذا المفتاح: إعادة تشغيل لتحميله
+        asyncio.get_event_loop().call_later(1.0, lambda: os._exit(0))
+    return {"ok": True, "report": rep, "saved": True, "restart": active}
+
+
 @app.get("/api/backup")
 async def backup_download(req: Request):
     auth(req)
@@ -358,8 +403,8 @@ async def control(req: Request):
         m = body.get("mode")
         if m not in ("paper", "testnet", "live"):
             raise HTTPException(400, "وضع غير معروف")
-        if m != "paper" and not settings.api_key:
-            raise HTTPException(400, "أضف مفاتيح API في ملف .env أولاً")
+        if m != "paper" and not keys.has(m):
+            raise HTTPException(400, "أضف مفاتيح Binance لهذا الوضع أولاً (الإعدادات ← ربط Binance)")
         if agent.broker and agent.broker.positions:
             raise HTTPException(400, "أغلق الصفقات المفتوحة (زر الطوارئ) قبل تغيير الوضع")
         if m == "live":

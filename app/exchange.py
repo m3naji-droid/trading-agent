@@ -17,9 +17,10 @@ STABLES = {"USDC", "FDUSD", "TUSD", "BUSD", "DAI", "USDP", "EUR", "USDE", "PYUSD
 def make_clients(mode: str):
     """يرجع (spot, futures). في وضع paper تُستخدم بيانات السوق العامة فقط."""
     common = {"enableRateLimit": True, "timeout": 20000}
-    keyed = mode in ("testnet", "live") and settings.api_key
-    if keyed:
-        common |= {"apiKey": settings.api_key, "secret": settings.api_secret}
+    from . import keys
+    k, s = keys.get(mode)
+    if mode in ("testnet", "live") and k:
+        common |= {"apiKey": k, "secret": s}
     spot = ccxt.binance(common | {"options": {"defaultType": "spot", "adjustForTimeDifference": True}})
     fut = ccxt.binanceusdm(common | {"options": {"adjustForTimeDifference": True}})
     if mode == "testnet":

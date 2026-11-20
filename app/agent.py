@@ -137,8 +137,9 @@ class Agent:
 
     # ================================================================ التشغيل
     async def start(self):
-        if self.mode in ("testnet", "live") and not settings.api_key:
-            memory.log_event("⚠️ لا توجد مفاتيح API — التحويل لوضع المحاكاة paper", "warn")
+        from . import keys
+        if self.mode in ("testnet", "live") and not keys.has(self.mode):
+            memory.log_event("⚠️ لا توجد مفاتيح Binance لهذا الوضع — التحويل لوضع المحاكاة paper", "warn")
             self.mode = "paper"
         self.spot, self.fut = make_clients(self.mode)
         if self.mode == "paper":

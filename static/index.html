@@ -257,12 +257,12 @@ details.smd .sml{padding:0 4px;background:none;margin:4px 0 0}details.smd .sml d
 <!-- ======================= ⚙️ الإعدادات ======================= -->
 <section class="tab" id="t-set">
   <div class="jump" id="j-set"></div>
+  <div class="card" id="sec-bn" data-k="bn"><h2>🔗 ربط Binance</h2><div id="bn"><div class="sk"></div><div class="sk s2"></div></div></div>
   <div class="card" id="sec-ctl" data-k="ctl"><h2>التحكم</h2>
     <div class="btns">
       <button id="bstart" onclick="ctl('start')">▶️ تشغيل الدخول</button>
       <button onclick="ctl('stop')">⏸️ إيقاف الدخول</button>
       <button onclick="ctl('resume')">🔓 رفع التجميد</button>
-      <button onclick="modeDlg()">🔁 تغيير الوضع</button>
       <button class="kill" onclick="if(confirm('إغلاق كل الصفقات وتجميد التداول فوراً؟'))ctl('kill')">🚨 مفتاح الطوارئ</button>
     </div>
     <details class="info"><summary>ⓘ متى أستخدم هذه الأزرار؟</summary><div>الوكيل يعمل وحده بالكامل. هذه الأزرار للطوارئ فقط. «إيقاف الدخول» يمنع صفقات جديدة ويستمر في إدارة المفتوحة. «مفتاح الطوارئ» يغلق كل شيء ويجمّد التداول.</div></details>
@@ -307,6 +307,47 @@ let STR={momentum_breakout:'الزخم والاختراق',trend_pullback:'ال�
 async function api(p,o={}){o.headers={'Content-Type':'application/json','Authorization':'Bearer '+TOKEN};const r=await fetch(p,o);if(r.status===401){$('login').style.display='flex';throw 0}const j=await r.json();if(!r.ok)throw new Error(j.detail||'خطأ');return j}
 async function doLogin(){try{const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:$('pw').value})});const j=await r.json();if(!r.ok)throw new Error(j.detail);TOKEN=j.token;localStorage.setItem('tok',TOKEN);$('login').style.display='none';refresh()}catch(e){$('lerr').textContent=e.message||'خطأ'}}
 async function ctl(a,extra={}){try{await api('/api/control',{method:'POST',body:JSON.stringify({action:a,...extra})});setTimeout(refresh,600)}catch(e){if(e)alert(e.message)}}
+const MODES={paper:['🧪','محاكاة','أموال وهمية داخل الوكيل — لا يحتاج أي ربط'],testnet:['🎓','حساب Binance التجريبي','أموال وهمية على Binance نفسها — يحتاج مفاتيح الحساب التجريبي'],live:['💰','الحساب الحقيقي','أموالك الحقيقية — يُفتح بعد نجاح المرحلة التجريبية']};
+let BN_OPEN=null,BN_REP={};
+function bnRow(w){const k=(S.keys||{})[w]||{},c=k.check||{},name=w==='live'?'💰 الحساب الحقيقي':'🎓 الحساب التجريبي';
+ let h=`<div class="ev"><div style="display:flex;justify-content:space-between;align-items:center;gap:6px"><b>${name}</b>${k.set?`<span class="chip up">✅ مربوط <span class="num" dir="ltr">${k.masked}</span></span>`:'<span class="chip mut">⚪ غير مربوط</span>'}</div>`;
+ if(k.set)h+=`<div class="reasons">${k.source==='env'?'مضاف من ملف السيرفر (.env)':`رُبط ${ago(k.saved)}`}${c.futures!=null?` · العقود ${c.futures?'✅':'❌'}`:''}${w==='live'&&c.ip_restrict!=null?` · مقيّد بـ IP ${c.ip_restrict?'✅':'⚠️'}`:''}${c.balance_spot!=null?` · رصيد Spot <span class="num">${f2(c.balance_spot)}</span>$`:''}${c.balance_fut!=null?` · Futures <span class="num">${f2(c.balance_fut)}</span>$`:''}</div>`;
+ if(BN_OPEN===w){h+=`<div style="margin-top:8px"><input id="bk" placeholder="API Key" dir="ltr" autocomplete="off" autocapitalize="off" spellcheck="false" style="font-size:13px">
+  <input id="bs" placeholder="Secret Key" type="password" dir="ltr" autocomplete="new-password" autocapitalize="off" spellcheck="false" style="font-size:13px">
+  ${w==='live'?'<input id="bp" placeholder="كلمة مرور لوحة التحكم (للتأكيد)" type="password" autocomplete="current-password" style="font-size:13px">':''}
+  <div class="btns"><button onclick="bnAct('${w}','test')">🔍 اختبار فقط</button><button class="pri" onclick="bnAct('${w}','save')">💾 اختبار وحفظ</button><button onclick="BN_OPEN=null;renderBN()">إلغاء</button></div></div>`}
+ else h+=`<div class="btns" style="margin-top:6px"><button onclick="BN_OPEN='${w}';BN_REP['${w}']=null;renderBN()">${k.set?'🔁 تغيير المفتاح':'🔗 ربط الحساب'}</button>${k.set&&k.source==='app'?`<button onclick="bnDel('${w}')">🗑️ حذف</button>`:''}</div>`;
+ const r=BN_REP[w];if(r)h+=`<div class="ev" style="margin-top:6px">${r.busy?'<div class="reasons">⏳ جارٍ الاختبار مع Binance…</div>':
+  (r.report&&r.report.items||[]).map(([t,x])=>`<div class="reasons">${t==='ok'?'✅':t==='warn'?'⚠️':'❌'} ${x}</div>`).join('')+(r.report&&r.report.fatal?`<div class="reasons dn"><b>❌ ${r.report.fatal}</b></div>`:'')+(r.err?`<div class="reasons dn"><b>❌ ${r.err}</b></div>`:'')+(r.saved?`<div class="reasons up"><b>✅ تم الحفظ${r.restart?' — الوكيل يعيد التشغيل خلال ثوانٍ ليستخدم المفتاح الجديد':''}</b></div>`:r.report&&r.report.ok?'<div class="reasons up"><b>✅ المفتاح سليم وجاهز للحفظ</b></div>':'')}</div>`;
+ return h+`</div>`}
+function renderBN(){if(!S)return;const ts=S.testnet||{},m=S.mode,ip=(S.keys||{}).ip;
+ let h=`<div class="reasons" style="margin:0 0 6px">الوضع الحالي: <b>${MODES[m][0]} ${MODES[m][1]}</b></div><div class="seg" style="flex-wrap:wrap">`+
+  Object.entries(MODES).map(([k,[i,n]])=>`<button class="${k===m?'pri':''}" onclick="setMode('${k}')" ${k===m?'disabled':''}>${i} ${n}</button>`).join('')+`</div>`;
+ h+=`<div class="reasons">${MODES[m][2]}</div>`;
+ if(ts.started&&!ts.passed)h+=`<div class="reasons">🔒 الحساب الحقيقي يُفتح بعد المرحلة التجريبية: <span class="num">${f2(ts.days,1)}/${ts.need_days}</span> أيام و<span class="num">${ts.trades}/${ts.need_trades}</span> صفقات</div>`;
+ else if(!ts.started)h+=`<div class="reasons">🔒 الحساب الحقيقي يُفتح بعد ${ts.need_days||7} أيام و${ts.need_trades||10} صفقات على الحساب التجريبي</div>`;
+ if(S.key_check&&!S.key_check.ok)h+=`<div class="reasons dn"><b>⛔ ${S.key_check.msg}</b></div>`;
+ h+=bnRow('testnet')+bnRow('live');
+ if(ip)h+=`<div class="row" style="margin-top:8px"><div><b>📍 عنوان السيرفر (IP)</b><div class="reasons">ألصقه في Binance عند إنشاء المفتاح</div></div><button onclick="navigator.clipboard.writeText('${ip}').then(()=>alert('✅ نُسخ العنوان: ${ip}'))"><span class="num" dir="ltr">${ip}</span> 📋</button></div>`;
+ h+=info(`<b>🎓 مفاتيح الحساب التجريبي</b> (ابدأ بها — أموال وهمية):<br>1) سجّل دخولك في Binance من متصفح الجوال (Safari).<br>2) افتح الرابط: <a href="https://demo.binance.com/en/my/settings/api-management" target="_blank" rel="noopener" dir="ltr">demo.binance.com/…/api-management</a><br>3) اضغط <b>Create API</b> واختر <b>System generated</b>، واكتب أي اسم (مثلاً: agent).<br>4) انسخ <b>API Key</b> و<b>Secret Key</b> وألصقهما هنا في «الحساب التجريبي» ثم اضغط «اختبار وحفظ».<br><br>
+ <b>💰 مفاتيح الحساب الحقيقي</b> (لاحقاً — عند فتح القفل):<br>1) في تطبيق Binance: <b>Profile</b> ← <b>API Management</b> ← <b>Create API</b> ← <b>System generated</b> ← اكتب اسماً ← أكّد بالرمز.<br>2) اضغط <b>Edit restrictions</b> ثم اختر <b>Restrict access to trusted IPs only</b> وألصق عنوان السيرفر أعلاه (زر 📋 ينسخه). <b>هذه الخطوة إلزامية</b>: بدونها لا يسمح Binance بالتداول.<br>3) فعّل فقط: ✅ <b>Enable Reading</b> ✅ <b>Enable Spot & Margin Trading</b> ✅ <b>Enable Futures</b>.<br>4) ❌ <b>لا تفعّل أبداً Enable Withdrawals</b> — الوكيل يرفض أي مفتاح فيه صلاحية سحب.<br>5) احفظ، ثم انسخ المفتاحين وألصقهما هنا في «الحساب الحقيقي».<br><br>
+ 🔐 الأمان: المفاتيح تُحفظ على سيرفرك فقط، ولا تظهر كاملة في التطبيق، ولا تدخل في ملف النسخة الاحتياطية. ولأن السحب معطّل والمفتاح مقيّد بعنوان سيرفرك، فحتى لو سُرق المفتاح لا يمكن سحب أموالك به.`,'📖 كيف أحصل على المفاتيح؟ (خطوة بخطوة)');
+ $('bn').innerHTML=h}
+async function bnAct(w,a){const key=$('bk').value,secret=$('bs').value,pw=$('bp')?$('bp').value:'';
+ if(!key.trim()||!secret.trim())return alert('ألصق المفتاح والكلمة السرية أولاً');
+ if(a==='save'&&w==='live'&&!pw)return alert('اكتب كلمة مرور لوحة التحكم للتأكيد');
+ BN_REP[w]={busy:true};const kv=key,sv=secret;renderBN();
+ try{const r=await api('/api/keys',{method:'POST',body:JSON.stringify({action:a,which:w,key:kv,secret:sv,password:pw})});BN_REP[w]=r;if(r.saved){BN_OPEN=null;setTimeout(refresh,r.restart?8000:600)}}
+ catch(e){BN_REP[w]={err:e?e.message:'تعذر الاتصال'}}
+ if(BN_OPEN===w){renderBN();$('bk').value=kv;$('bs').value=sv}else renderBN()}
+async function bnDel(w){if(!confirm('حذف مفاتيح '+(w==='live'?'الحساب الحقيقي':'الحساب التجريبي')+'؟'+(S.mode===w?'\nسيعود الوكيل لوضع المحاكاة.':'')))return;
+ const pw=w==='live'?prompt('اكتب كلمة مرور لوحة التحكم للتأكيد'):'';if(w==='live'&&!pw)return;
+ try{await api('/api/keys',{method:'POST',body:JSON.stringify({action:'delete',which:w,password:pw})});BN_REP[w]=null;setTimeout(refresh,600)}catch(e){if(e)alert(e.message)}}
+function setMode(m){const k=(S.keys||{})[m];
+ if(m!=='paper'&&!(k&&k.set)){BN_OPEN=m;renderBN();return alert('اربط '+(m==='live'?'الحساب الحقيقي':'الحساب التجريبي')+' أولاً — ألصق المفاتيح في الخانة المفتوحة')}
+ if(m==='live'&&!confirm('⚠️ سيتداول الوكيل بأموالك الحقيقية على Binance. متأكد؟'))return;
+ if(m!=='live'&&!confirm('تغيير الوضع إلى «'+MODES[m][1]+'»؟ سيعيد الوكيل التشغيل خلال ثوانٍ.'))return;
+ ctl('mode',{mode:m})}
 function modeDlg(){const m=prompt('اكتب الوضع الجديد:\npaper = محاكاة\ntestnet = حساب Binance التجريبي\nlive = أموال حقيقية',S?.mode||'paper');if(!m)return;if(m==='live'&&!confirm('⚠️ سيتداول الوكيل بأموالك الحقيقية. متأكد؟'))return;ctl('mode',{mode:m.trim()})}
 
 let TAB='home';
@@ -441,7 +482,7 @@ async function loadChart(){const s=$('sym').value;if(!s||!cs)return;try{const d=
 let LOADED_VER=null;
 function hardRefresh(){$('rfb').classList.add('spin');setTimeout(()=>location.reload(),250)}
 function render(s){S=s;for(const[f,a]of[[renderWhy,s],[renderStrip,s],[renderHealth,s.health],[renderSafe,s],[renderEvMini,s],[renderCal,(s.perf||{}).daily]])try{f(a)}catch(e){console.log(e)}if(s.strategy_names)Object.assign(STR,s.strategy_names);try{renderGate(s)}catch(e){console.log(e)}if(s.version){if(LOADED_VER===null)LOADED_VER=s.version;else if(s.version!==LOADED_VER)$('upd').style.display='block'}try{renderPerf(s)}catch(e){console.log(e)}
- for(const[f,a]of[[renderMacro,s],[renderPrec,s.precision],[renderAutopsy,s.autopsy],[renderSmart,s.smart],[renderOnchain,s.onchain],[renderMC,(s.perf||{}).monte_carlo],[renderMaint,s],[renderExplorer,s.explorer],[renderMood,s.mood],[renderDarwin,s.darwin],[renderCouncil,s.council_stats]])try{f(a)}catch(e){console.log(e)}
+ for(const[f,a]of[[s=>{if(!BN_OPEN)renderBN()},s],[renderMacro,s],[renderPrec,s.precision],[renderAutopsy,s.autopsy],[renderSmart,s.smart],[renderOnchain,s.onchain],[renderMC,(s.perf||{}).monte_carlo],[renderMaint,s],[renderExplorer,s.explorer],[renderMood,s.mood],[renderDarwin,s.darwin],[renderCouncil,s.council_stats]])try{f(a)}catch(e){console.log(e)}
  try{renderGhosts(s)}catch(e){console.log(e)}$('ver').textContent=s.version||'—';
  $('mode').textContent=s.mode.toUpperCase();$('mode').className='pill '+(s.mode==='live'?'w':'on');
  $('run').textContent=s.frozen?'مُجمَّد':s.running?'يعمل':'متوقف';$('run').className='pill '+(s.frozen?'off':s.running?'on':'w');
