@@ -157,7 +157,7 @@ def _cos(a, b):
     return dot / (na * nb)
 
 
-def check_pattern(strategy, side, feats, k=12):
+def check_pattern(strategy, side, feats, k=30):
     """
     يرجع (مسموح؟, شرح, إحصاءات). يرفض إذا كانت أقرب الصفقات المشابهة جداً خاسرة في الغالب.
     يشمل الصفقات الحقيقية والظلّية (التجريبية الموازية) والتدريب التاريخي.
@@ -165,24 +165,32 @@ def check_pattern(strategy, side, feats, k=12):
     with _conn() as c:
         rows = c.execute(
             "SELECT features, r_mult FROM trades WHERE strategy=? AND side=? AND closed IS NOT NULL "
-            "ORDER BY closed DESC LIMIT 3000", (strategy, side)).fetchall()
-    sims = []
+            "AND market NOT IN ('near','explore_near') ORDER BY closed DESC LIMIT 3000", (strategy, side)).fetchall()
+    sims, allr = [], []
     for r in rows:
         f = json.loads(r["features"] or "[]")
+        rr = max(-3.0, min(6.0, r["r_mult"] or 0))
+        allr.append(rr)
         if f:
             s = _cos(feats, f)
             if s >= settings.memory_similarity:
-                sims.append((s, r["r_mult"] or 0))
+                sims.append((s, rr))
     sims.sort(reverse=True)
     near = sims[:k]
-    if len(near) < 4:
+    if len(near) < 10:
         return True, f"نمط جديد ({len(near)} حالة مشابهة)", {"n": len(near), "winrate": 0.5, "avg_r": 0.0}
-    losses = sum(1 for _, r in near if r <= 0)
-    avg_r = sum(r for _, r in near) / len(near)
-    st = {"n": len(near), "winrate": 1 - losses / len(near), "avg_r": avg_r}
-    if losses / len(near) >= 0.7 and avg_r < 0:
-        return False, f"نمط خاسر سابقاً: {losses}/{len(near)} خسارة، متوسط {avg_r:+.2f}R", st
-    return True, f"نمط معروف: {len(near) - losses}/{len(near)} ربح، متوسط {avg_r:+.2f}R", st
+    rs = [r for _, r in near]
+    n = len(rs)
+    losses = sum(1 for r in rs if r <= 0)
+    avg_r = sum(rs) / n
+    base = sum(allr) / len(allr)
+    sd = (sum((r - avg_r) ** 2 for r in rs) / (n - 1)) ** 0.5 or 1.0
+    t = (avg_r - base) / (sd / n ** 0.5)
+    st = {"n": n, "winrate": 1 - losses / n, "avg_r": avg_r}
+    # يرفض فقط إن كان النمط أسوأ بوضوح إحصائي من المعتاد لنفس الاستراتيجية (وليس مجرد خسائر عادية)
+    if avg_r < -0.2 and avg_r < base - 0.3 and t < -2:
+        return False, f"نمط خاسر سابقاً: {losses}/{n} خسارة، متوسط {avg_r:+.2f}R (المعتاد {base:+.2f}R)", st
+    return True, f"نمط معروف: {n - losses}/{n} ربح، متوسط {avg_r:+.2f}R", st
 
 
 def council_stats(mode, days=30):

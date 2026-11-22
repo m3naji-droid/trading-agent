@@ -141,10 +141,23 @@ class Agent:
         if self.mode in ("testnet", "live") and not keys.has(self.mode):
             memory.log_event("⚠️ لا توجد مفاتيح Binance لهذا الوضع — التحويل لوضع المحاكاة paper", "warn")
             self.mode = "paper"
-        self.spot, self.fut = make_clients(self.mode)
+        if self.mode == "testnet":
+            # بيانات السوق من Binance الحقيقي (أسعار وأحجام حقيقية لكل العملات)،
+            # والحساب التجريبي للأوامر والرصيد فقط — بيانات الحساب التجريبي ناقصة (عملات وأحجام أقل).
+            self.spot, self.fut = make_clients("paper")
+            bspot, bfut = make_clients("testnet")
+            for ex in (bspot, bfut):  # قوائم العملات ودقة الكميات من الحساب التجريبي نفسه (لتقريب الأوامر)
+                try:
+                    await ex.load_markets()
+                except Exception as e:
+                    memory.log_event(f"⚠️ تعذر تحميل أسواق الحساب التجريبي: {str(e)[:120]}", "warn")
+            self.broker = LiveBroker(bspot, bfut, self.mode)
+            self.key_check = {"ok": True, "msg": "الحساب التجريبي: أموال وهمية"}
+        else:
+            self.spot, self.fut = make_clients(self.mode)
         if self.mode == "paper":
             self.broker = PaperBroker(self.spot, self.fut)
-        else:
+        elif self.mode == "live":
             self.key_check = await check_key_permissions(self.spot)
             memory.log_event(f"🔐 {self.key_check['msg']}", "info" if self.key_check["ok"] else "error")
             if not self.key_check["ok"]:
@@ -391,6 +404,9 @@ class Agent:
             meta["ml"] = ml_p
             ctx["meta"], ctx["pos"] = meta, pv
             allowed, why, pstats = memory.check_pattern(sig.strategy, sig.side, feats)
+            meta["mem"] = 1 if allowed else 0
+            if not allowed and not self.precision.memory_veto_on():
+                allowed, why = True, why + " — لكن فلتر الذاكرة لم يثبت فائدته فتم تجاوزه"
             cn = deliberate(sig, ctx, conf, self.risk, pstats, self.mood, sym.split("/")[0])
             self._open_shadow(sym, ctx, sig, feats, cn, meta=meta)
             self.analysis[sym]["last_decision"] = {"strategy": STRATEGY_AR[sig.strategy], "side": sig.side,
@@ -407,12 +423,12 @@ class Agent:
                                        {"features": feats, "regime": ctx["regime"]["regime"], "council": cn,
                                         "reasons": sig.reasons + [why], "meta": meta})
             if not allowed:
-                memory.log_event(f"🧠 رفض {sym} {STRATEGY_AR[sig.strategy]}: {why}")
-                self.blocks.append((time.time(), "memory"))
+                self._throttled(f"mem_{sym}_{sig.strategy}", 3600, f"🧠 رفض {sym} {STRATEGY_AR[sig.strategy]}: {why}")
+                self._block("memory")
                 continue
             meme = self.is_meme(sym)
             if veto and conf >= settings.min_confidence:
-                self.blocks.append((time.time(), "unlock"))
+                self._block("unlock")
                 self._throttled(f"unlock_{sym}", 6 * 3600, f"🔓 تجاوز شراء {sym}: {veto} — حماية من ضغط البيع")
                 continue
             if conf >= settings.min_confidence and sym not in open_syms:
@@ -424,28 +440,28 @@ class Agent:
                 elif self.autopsy.has_fix(sig.strategy, "fake_breakout") and float(ctx["df"]["vol_z"].iloc[-1] or 0) < 0.5:
                     fx = ("volconfirm", f"💥 تجاوز {sym}: اختراق بلا حجم كافٍ (علاج تلقائي من تشريح الخسائر)")
                 if fx:
-                    self.blocks.append((time.time(), fx[0]))
+                    self._block(fx[0])
                     self._throttled(f"fx_{fx[0]}_{sym}_{sig.strategy}", 3600, fx[1])
                     continue
             gst = self.gate_status(sig.strategy, meme)
             champ = self.darwin.champion(sig.strategy)
             if conf < settings.min_confidence:
-                self.blocks.append((time.time(), "confidence"))
+                self._block("confidence")
             if conf >= settings.min_confidence and sym not in open_syms and gst != "approved":
-                self.blocks.append((time.time(), "gate"))
+                self._block("gate")
                 g_ = (self.gate_meme if meme else self.gate).get(sig.strategy, {})
                 self._throttled(f"gate_{sig.strategy}_{meme}", 6 * 3600,
                                 f"🛡️ {STRATEGY_AR[sig.strategy]}: فرصة في {sym} لكن الاستراتيجية لم تُعتمد بعد"
                                 f"{' للعملات الميمية' if meme else ''} ({g_.get('reason', 'تحت الاختبار')}) — تُسجَّل للتعلم فقط")
                 continue
             if conf >= settings.min_confidence and sym not in open_syms and not accepts(champ, metrics(ctx, sig)):
-                self.blocks.append((time.time(), "darwin"))
+                self._block("darwin")
                 self._throttled(f"dw_{sym}_{sig.strategy}", 3600,
                                 f"🧬 فلتر داروين تجاوز {sym} ({STRATEGY_AR[sig.strategy]}): الإشارة لا تحقق شروط الدخول المتطورة")
                 continue
             if conf >= settings.min_confidence and sym not in open_syms:
                 if not cn["approved"]:
-                    self.blocks.append((time.time(), "council"))
+                    self._block("council")
                     no = [v for v in cn["votes"] if not v["vote"]]
                     key = f"council_{sym}_{sig.strategy}"
                     if time.time() - self._skip_log.get(key, 0) > 3600:
@@ -471,7 +487,7 @@ class Agent:
         for _, conf, sym, ctx, sig, feats, why, cn, meta, s_mult in scored:
             slots = settings.max_open_positions - len(self.broker.positions)
             if slots <= 0:
-                self.blocks.append((time.time(), "slots"))
+                self._block("slots")
                 break
             if sym in {p["symbol"] for p in self.broker.positions.values()}:
                 continue
@@ -480,13 +496,13 @@ class Agent:
             if self.is_meme(sym):
                 n_meme = sum(1 for p in self.broker.positions.values() if self.is_meme(p["symbol"]))
                 if n_meme >= settings.meme_max_positions:
-                    self.blocks.append((time.time(), "meme"))
+                    self._block("meme")
                     continue  # صفقة ميمية واحدة كحد أقصى
             if sig.side == "short" and not has_futures(self.fut, sym):
                 continue  # لا يوجد عقد Futures مطابق => شراء فقط
             ok, cmult, cnote = self.correlation_check(sym, sig.side)
             if not ok:
-                self.blocks.append((time.time(), "corr"))
+                self._block("corr")
                 self._throttled(f"corr_{sym}", 3600, f"🔗 تجاوز {sym}: {cnote}")
                 continue
             k_mult, k_note = self.precision.consensus_mult(meta["cons"], meta["conflict"])
@@ -558,7 +574,14 @@ class Agent:
         sig.entry, sig.stop, sig.target = price, price - d * dist, price + d * dist * rr0 * genome["rr"]
         open_notional = sum(p["notional"] for p in self.broker.positions.values())
         meme = self.is_meme(sym)
-        spot_only = not has_futures(self.fut, sym)
+        spot_only = not has_futures(self.fut, sym) or self.futures_empty()
+        if self.mode == "testnet":  # بعض العملات غير موجودة في الحساب التجريبي
+            bm, fm = getattr(self.broker.spot, "markets", None) or {}, getattr(self.broker.fut, "markets", None) or {}
+            if bm and sym not in bm:
+                self._throttled(f"nodemo_{sym}", 6 * 3600, f"ℹ️ {sym} غير متاحة في حساب Binance التجريبي — تجاوز")
+                return
+            if fm and fut_symbol(sym) not in fm:
+                spot_only = True
         emult, enote = self.edge_multiplier(sig.strategy, ctx["regime"]["regime"])
         sf = self.safe_factor()
         mx = getattr(self.mood, "macro", None) or {}
@@ -708,6 +731,9 @@ class Agent:
         if not self.fresh_candle():
             nx = int(CANDLE - time.time() % CANDLE)
             add("🕯️", f"يدخل فقط فور إغلاق الشمعة — التحليل التالي بعد {nx // 60}:{nx % 60:02d}", "info")
+        if self.futures_empty():
+            add("📭", "محفظة العقود (Futures) على Binance فارغة — الوكيل يدخل صفقات شراء Spot فقط ولا يستطيع البيع على المكشوف. "
+                      "لتفعيل العقود: حوّل جزءاً من رصيد USDT إلى محفظة Futures في Binance", "info")
         ls = self.last_scan
         if ls["ts"]:
             add("🔎", f"آخر تحليل: {ls['signals']} فرصة من {ls['coins']} عملة", "info")
@@ -744,6 +770,16 @@ class Agent:
         part("دراسة التاريخ مكتملة", bool(self.study.get("finished")), 5)
         score = sum(p["w"] for p in parts if p["ok"])
         return {"score": score, "parts": parts}
+
+    def futures_empty(self):
+        """محفظة العقود على Binance فارغة => صفقات شراء Spot فقط (لا بيع على المكشوف ولا رافعة)."""
+        fb = getattr(self.broker, "fut_balance", None)
+        return self.mode != "paper" and fb is not None and fb < 10
+
+    def _block(self, k):
+        """يُحسب الرفض فقط عند لحظة الدخول الفعلية (بعد إغلاق الشمعة) — لا تكرار كل دقيقة."""
+        if self.fresh_candle():
+            self.blocks.append((time.time(), k))
 
     def fresh_candle(self):
         return (time.time() % CANDLE) <= FRESH_WINDOW

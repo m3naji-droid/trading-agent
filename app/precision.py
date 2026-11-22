@@ -203,6 +203,7 @@ class Precision:
         self.sess = st.get("sess", {})
         self.drift = st.get("drift", {})       # strategy -> {s, n, until, mu0, alarms}
         self.drift_events = st.get("drift_events", [])
+        self.mem = st.get("mem", {"on": True})
         self.last_train = st.get("last_train", 0)
         self.lock = threading.Lock()
 
@@ -211,7 +212,7 @@ class Precision:
             memory.kv_set("precision", _jsonable({
                 "model_info": self.model_info, "model": self.model.to_json() if self.model else None,
                 "cal": self.cal, "cons": self.cons, "sess": self.sess, "drift": self.drift,
-                "drift_events": self.drift_events[-30:], "last_train": self.last_train}))
+                "drift_events": self.drift_events[-30:], "last_train": self.last_train, "mem": self.mem}))
 
     # ----------------------------------------------------------------- البيانات
     @staticmethod
@@ -245,6 +246,8 @@ class Precision:
         self._calibrate([x for x in live if "conf" in x["meta"]])
         self._consensus([x for x in live if "cons" in x["meta"]])
         self._sessions([x for x in rows if x["market"] != "history"] or rows, rows)
+        self._audit_memory([x for x in rows if x["market"] == "shadow" and "mem" in x["meta"]
+                            and x["ts"] >= time.time() - 30 * 86400])
         self.last_train = time.time()
         self.save()
 
@@ -297,6 +300,20 @@ class Precision:
             return p, 0.0, ""
         return p, adj, (f"🧠 الحَكَم الذكي: تشبه الصفقات الرابحة ({p:.0%})" if adj > 0
                         else f"🧠 الحَكَم الذكي: تشبه الصفقات الخاسرة ({p:.0%})")
+
+    # ----------------------------------------------------------------- محاسبة فلتر الذاكرة
+    def _audit_memory(self, rows):
+        """هل الفرص التي رفضها فلتر الذاكرة كانت فعلاً أسوأ؟ (من الصفقات الظلية التي تُفتح للجميع)."""
+        v = [x["r"] for x in rows if x["meta"]["mem"] == 0]
+        a = [x["r"] for x in rows if x["meta"]["mem"] == 1]
+        m = {"veto_n": len(v), "ok_n": len(a), "veto_r": float(np.mean(v)) if v else 0.0,
+             "ok_r": float(np.mean(a)) if a else 0.0, "on": True}
+        if len(v) >= 40 and len(a) >= 40 and m["veto_r"] >= m["ok_r"] - 0.05:
+            m["on"] = False  # المرفوضة لم تكن أسوأ => الفلتر يضيّع فرصاً بلا فائدة
+        self.mem = m
+
+    def memory_veto_on(self):
+        return (getattr(self, "mem", None) or {}).get("on", True)
 
     # ----------------------------------------------------------------- صدق الثقة
     def _calibrate(self, rows):
@@ -426,7 +443,7 @@ class Precision:
         return bool(d and d.get("until", 0) > time.time())
 
     def summary(self):
-        return {"model": self.model_info, "cal": {k: v for k, v in self.cal.items() if k not in ("xs", "ys")},
+        return {"mem": self.mem, "model": self.model_info, "cal": {k: v for k, v in self.cal.items() if k not in ("xs", "ys")},
                 "cons": self.cons, "sess": self.sess, "sess_names": SESSIONS, "now_sess": session_of(time.time()),
                 "drift": {k: {"s": round(v["s"], 2), "until": v["until"], "alarms": v["alarms"]}
                           for k, v in self.drift.items() if v.get("until", 0) > time.time() or v.get("s", 0) > self.H * 0.4},

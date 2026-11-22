@@ -109,6 +109,7 @@ class LiveBroker(PaperBroker):
                            for p in self.positions.values() if p["market"] == "spot")
             fb = await self.fut.fetch_balance()
             fut_eq = float(fb.get("info", {}).get("totalMarginBalance") or fb.get("USDT", {}).get("total") or 0)
+            self.fut_balance = fut_eq
             self._last_equity = usdt + spot_val + fut_eq
             self.balance = usdt + fut_eq
         except Exception as e:

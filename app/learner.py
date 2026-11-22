@@ -60,11 +60,13 @@ class Learner:
         """درجة 0..1 لمدى جدارة الاستراتيجية في هذه الحالة."""
         with self.lock:
             a = dict(self._arm(strategy, regime))
-        alpha, beta = a["w"] + PRIOR, a["l"] + PRIOR
-        p = random.betavariate(alpha, beta) if sample else alpha / (alpha + beta)
-        expectancy = a["r"] / (a["n"] + 8)  # تقليص نحو الصفر عند قلة البيانات
-        exp_score = 1 / (1 + pow(2.718, -3 * expectancy))
-        return 0.5 * p + 0.5 * exp_score
+        # الحكم على "متوسط الربح لكل صفقة" وليس نسبة الصفقات الرابحة فقط:
+        # استراتيجية تربح 35% من صفقاتها بهدف 3R مربحة، ولا يجوز معاقبتها.
+        n = a["n"]
+        mean = a["r"] / (n + 8)  # تقليص نحو الصفر عند قلة البيانات
+        if sample:  # Thompson: عينة من عدم اليقين حول المتوسط
+            mean = random.gauss(mean, 1.2 / (n + 8) ** 0.5)
+        return 1 / (1 + pow(2.718, -4 * mean))
 
     def blended_confidence(self, sig, regime):
         return 0.5 * sig.confidence + 0.5 * self.score(sig.strategy, regime)
