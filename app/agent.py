@@ -233,8 +233,13 @@ class Agent:
         tick = await self.spot.fetch_tickers(watch)
         self.prices = {s: float(t["last"]) for s, t in tick.items() if t.get("last")}
 
+        rec = []
         for pos, fill, pnl, *why in await self.broker.sync(self.prices):
             self._on_closed(pos, fill, pnl, why[0] if why else "exchange_stop")
+            if pos.get("_reconciled"):
+                rec.append(pos)
+        if rec:
+            await self._rebase_equity(rec)
 
         self.equity = await self.broker.equity(self.prices)
         if time.time() - self._last_equity_rec > 300:
@@ -914,12 +919,32 @@ class Agent:
     async def _close(self, pos, price, reason):
         if pos["id"] not in self.broker.positions:
             return  # أُغلقت للتو من مسار آخر
+        if time.time() - pos.get("_close_fail", 0) < 60:
+            return  # فشل قبل قليل: لا نكرر كل ثانية
         try:
             fill, pnl = await self.broker.close(pos, price, reason)
         except Exception as e:
-            memory.log_event(f"❌ فشل إغلاق {pos['symbol']}: {e}", "error")
+            pos["_close_fail"] = time.time()
+            self._throttled(f"closefail_{pos['id']}", 600, f"❌ فشل إغلاق {pos['symbol']}: {e}", "error")
             return
-        self._on_closed(pos, fill, pnl, reason)
+        self._on_closed(pos, fill, pnl, pos.pop("_closed_by", None) or reason)
+        if pos.get("_reconciled"):
+            await self._rebase_equity([pos])
+
+    async def _rebase_equity(self, gone):
+        """
+        صفقة أغلقها Binance بينما ظن الوكيل أنها ما زالت مفتوحة => كانت قيمة المحفظة تُحسب مرتين.
+        نصحح: نحذف نقاط منحنى المحفظة المتضخمة، ونعيد ضبط بداية اليوم حتى لا يُطلق مفتاح الطوارئ خطأً.
+        """
+        self.equity = await self.broker.equity(self.prices)
+        since = min(p.get("opened", time.time()) for p in gone)
+        n = memory.delete_equity_since(self.mode, since)
+        memory.record_equity(self.equity, self.prices.get("BTC/USDT"), self.mode)
+        self.risk.day_start_equity = self.equity
+        self.risk.peak_equity = self.equity
+        self.risk.save()
+        memory.log_event(f"🧾 مطابقة مع Binance: {len(gone)} صفقة أغلقها وقف المنصة بينما كان الوكيل يعدّها مفتوحة — "
+                         f"صُححت قيمة المحفظة إلى ${self.equity:,.2f} وحُذفت {n} نقطة متضخمة من المنحنى", "warn")
 
     def _mfe(self, p):
         risk = abs(p["entry"] - p.get("init_stop", p.get("stop")))

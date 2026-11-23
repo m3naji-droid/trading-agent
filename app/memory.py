@@ -99,6 +99,11 @@ def _mode_clause(mode):
     return "mode=?", (mode,)
 
 
+def delete_equity_since(mode, ts):
+    with _conn() as c:
+        return c.execute("DELETE FROM equity WHERE mode=? AND ts>=?", (mode, ts)).rowcount
+
+
 def equity_rows(mode=None, since_sec=None):
     cl, args = _mode_clause(mode)
     q = f"SELECT ts,value,btc FROM equity WHERE {cl}"

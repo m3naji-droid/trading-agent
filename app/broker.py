@@ -105,8 +105,13 @@ class LiveBroker(PaperBroker):
         try:
             sb = await self.spot.fetch_balance()
             usdt = float(sb.get("USDT", {}).get("total") or 0)
-            spot_val = sum(p["qty"] * prices.get(p["symbol"], p["entry"])
-                           for p in self.positions.values() if p["market"] == "spot")
+            # قيمة صفقات Spot = ما نملكه فعلاً على المنصة (وليس ما في سجل الوكيل) — يمنع العدّ المزدوج
+            held = {}
+            for p in self.positions.values():
+                if p["market"] == "spot":
+                    b = p["symbol"].split("/")[0]
+                    held.setdefault(b, [0.0, prices.get(p["symbol"], p["entry"])])[0] += p["qty"]
+            spot_val = sum(min(q, float((sb.get(b) or {}).get("total") or 0)) * px for b, (q, px) in held.items())
             fb = await self.fut.fetch_balance()
             fut_eq = float(fb.get("info", {}).get("totalMarginBalance") or fb.get("USDT", {}).get("total") or 0)
             self.fut_balance = fut_eq
@@ -156,6 +161,7 @@ class LiveBroker(PaperBroker):
 
     async def _cancel_stop(self, pos):
         if pos.get("stop_order"):
+            pos["last_stop_order"] = pos["stop_order"]
             ex, sym = self._ex(pos)
             try:
                 await ex.cancel_order(pos["stop_order"], sym)
@@ -278,13 +284,69 @@ class LiveBroker(PaperBroker):
         self._save()
         return fill, pnl
 
+    async def _stop_fill(self, pos):
+        """إن كان وقف المنصة قد نُفذ فعلاً: يرجع سعر تنفيذه، وإلا None."""
+        ex, sym = self._ex(pos)
+        for key in ("stop_order", "last_stop_order"):
+            oid = pos.get(key)
+            if not oid:
+                continue
+            try:
+                o = await ex.fetch_order(oid, sym)
+            except Exception:
+                continue
+            if o.get("status") == "closed" or float(o.get("filled") or 0) >= pos["qty"] * 0.5:
+                return float(o.get("average") or o.get("price") or pos["stop"])
+        return None
+
+    async def _held(self, pos):
+        """الكمية الموجودة فعلاً على المنصة لهذه الصفقة (Spot: رصيد العملة، Futures: حجم المركز)."""
+        ex, sym = self._ex(pos)
+        if pos["market"] == "spot":
+            b = (await ex.fetch_balance()).get(pos["symbol"].split("/")[0]) or {}
+            return float(b.get("total") or 0), float(b.get("free") or 0)
+        ps = await ex.fetch_positions([sym])
+        q = sum(abs(float(p.get("contracts") or 0)) for p in ps if p.get("symbol") == sym)
+        return q, q
+
+    def _gone(self, pos, fill):
+        """الصفقة لم تعد موجودة على المنصة: تُغلق في السجل بسعر الوقف المنفذ (أو الأقرب للواقع)."""
+        d = 1 if pos["side"] == "long" else -1
+        pnl = (fill - pos["entry"]) * pos["qty"] * d - 2 * pos.get("fees", 0)
+        pos["_reconciled"] = True
+        self.positions.pop(pos["id"], None)
+        self._save()
+        return fill, pnl
+
     async def close(self, pos, price, reason):
         ex, sym = self._ex(pos)
+        sf = await self._stop_fill(pos)
+        if sf is not None:  # وقف المنصة سبق الوكيل وأغلقها
+            await self._cancel_tp(pos)
+            pos["_closed_by"] = "exchange_stop"
+            return self._gone(pos, sf)
         await self._cancel_stop(pos)
         await self._cancel_tp(pos)
         side = "sell" if pos["side"] == "long" else "buy"
         params = {"reduceOnly": True} if pos["market"] == "futures" else {}
         qty = float(ex.amount_to_precision(sym, pos["qty"]))
+        try:
+            total, free = await self._held(pos)
+        except Exception:
+            total = free = None
+        if total is not None:
+            if total * price < self.min_cost(pos["symbol"], pos["market"]) * 0.5:
+                sf = await self._stop_fill(pos)
+                pos["_closed_by"] = "exchange_stop"
+                return self._gone(pos, sf if sf is not None else price)
+            if pos["market"] == "spot" and free < qty * 0.99 and total >= qty * 0.99:
+                try:  # الكمية محجوزة في أمر قديم على المنصة (مثل وقف لم يُلغَ) — نلغيه أولاً
+                    await ex.cancel_all_orders(sym)
+                    total, free = await self._held(pos)
+                except Exception as e:
+                    log.warning(f"cancel_all {sym}: {e}")
+            if pos["market"] == "spot" and free < qty:  # لا نبيع أكثر مما نملك (عمولات، تقريب)
+                qty = float(ex.amount_to_precision(sym, free))
         o = await ex.create_order(sym, "market", side, qty, None, params)
         fill = float(o.get("average") or price)
         d = 1 if pos["side"] == "long" else -1
@@ -316,6 +378,21 @@ class LiveBroker(PaperBroker):
                     self.positions.pop(pos["id"], None)
                     closed.append((pos, fill, pnl, reason))
                     break
+        # مطابقة مع المنصة كل 5 دقائق: صفقة في السجل لم تعد موجودة على Binance => تُغلق في السجل
+        if time.time() - getattr(self, "_last_rec", 0) > 300:
+            self._last_rec = time.time()
+            for pos in list(self.positions.values()):
+                if pos["id"] not in self.positions or time.time() - pos.get("opened", 0) < 120:
+                    continue
+                try:
+                    total, _ = await self._held(pos)
+                except Exception:
+                    continue
+                px = prices.get(pos["symbol"], pos["entry"])
+                if total < pos["qty"] * 0.5 and total * px < self.min_cost(pos["symbol"], pos["market"]):
+                    sf = await self._stop_fill(pos)
+                    fill, pnl = self._gone(pos, sf if sf is not None else px)
+                    closed.append((pos, fill, pnl, "exchange_stop"))
         if closed:
             self._save()
         return closed
